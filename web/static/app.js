@@ -23,6 +23,9 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("directorInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") advanceStory();
   });
+  ["settingAzureEndpoint", "settingDirectorModel", "settingCharModel"].forEach((elementId) => {
+    document.getElementById(elementId)?.addEventListener("input", updateTemperatureControls);
+  });
 });
 
 // --- Tarinalistan ja Tarinan lataus ---
@@ -591,12 +594,190 @@ function closeSettingsModal() {
   document.getElementById("settingsModal").classList.add("hidden");
 }
 
+const SETTINGS_PROFILES_KEY = "storytime.providerProfiles";
+const ACTIVE_SETTINGS_PROFILE_KEY = "storytime.activeProviderProfile";
+
+function createProfile(provider, name) {
+  return {
+    id: crypto.randomUUID(),
+    name: name || (provider === "azure" ? "Azure AI" : "Grok"),
+    provider,
+    xai_api_key: "",
+    azure_openai_endpoint: "",
+    azure_openai_api_key: "",
+    azure_openai_api_version: "2024-10-21",
+    azure_deployment_name: "",
+    director_model: provider === "azure" ? "gpt-4o" : "grok-4.6",
+    director_max_tokens: 3500,
+    director_temperature: 0.85,
+    director_reasoning_effort: "medium",
+    character_model: provider === "azure" ? "gpt-4o" : "grok-4.3",
+    character_max_tokens: 600,
+    character_temperature: 0.75,
+    character_reasoning_effort: "low",
+  };
+}
+
+function getSettingsProfiles() {
+  try {
+    const profiles = JSON.parse(localStorage.getItem(SETTINGS_PROFILES_KEY) || "[]");
+    return Array.isArray(profiles) ? profiles : [];
+  } catch (err) {
+    console.warn("Asetusprofiilien luku epäonnistui:", err);
+    return [];
+  }
+}
+
+function saveSettingsProfiles(profiles) {
+  localStorage.setItem(SETTINGS_PROFILES_KEY, JSON.stringify(profiles));
+}
+
+function getActiveSettingsProfileId() {
+  return localStorage.getItem(ACTIVE_SETTINGS_PROFILE_KEY);
+}
+
+function setActiveSettingsProfileId(profileId) {
+  localStorage.setItem(ACTIVE_SETTINGS_PROFILE_KEY, profileId);
+}
+
+function renderSettingsProfileSelect() {
+  const select = document.getElementById("settingsProfileSelect");
+  const profiles = getSettingsProfiles();
+  const activeId = getActiveSettingsProfileId();
+  select.innerHTML = "";
+  profiles.forEach((profile) => {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.name;
+    select.appendChild(option);
+  });
+  select.value = profiles.some((profile) => profile.id === activeId) ? activeId : profiles[0]?.id;
+}
+
+function currentSettingsProfile() {
+  return getSettingsProfiles().find((profile) => profile.id === document.getElementById("settingsProfileSelect").value);
+}
+
+function setInputValue(elementId, value) {
+  const input = document.getElementById(elementId);
+  if (input) input.value = value ?? "";
+}
+
+function isAzureFoundryGpt5Profile(provider, endpoint, model) {
+  return provider === "azure"
+    && endpoint.trim().replace(/\/$/, "").toLowerCase().endsWith("/openai/v1")
+    && model.trim().toLowerCase().startsWith("gpt-5");
+}
+
+function updateTemperatureControl(modelId, temperatureId, noteId) {
+  const provider = document.getElementById("settingProvider").value;
+  const endpoint = document.getElementById("settingAzureEndpoint").value;
+  const model = document.getElementById(modelId).value;
+  const isFixed = isAzureFoundryGpt5Profile(provider, endpoint, model);
+  const temperatureInput = document.getElementById(temperatureId);
+  const note = document.getElementById(noteId);
+
+  temperatureInput.disabled = isFixed;
+  temperatureInput.title = isFixed ? "Azure AI Foundry GPT-5 tukee vain lämpötilaa 1." : "";
+  note.classList.toggle("hidden", !isFixed);
+  if (isFixed) temperatureInput.value = "1";
+}
+
+function updateTemperatureControls() {
+  updateTemperatureControl("settingDirectorModel", "settingDirectorTemp", "settingDirectorTempNote");
+  updateTemperatureControl("settingCharModel", "settingCharTemp", "settingCharTempNote");
+}
+
+function populateSettingsProfile(profile) {
+  if (!profile) return;
+  setInputValue("settingProfileName", profile.name);
+  setInputValue("settingProvider", profile.provider);
+  setInputValue("settingXaiKey", profile.xai_api_key);
+  setInputValue("settingAzureEndpoint", profile.azure_openai_endpoint);
+  setInputValue("settingAzureKey", profile.azure_openai_api_key);
+  setInputValue("settingAzureVersion", profile.azure_openai_api_version || "2024-10-21");
+  setInputValue("settingAzureDeployment", profile.azure_deployment_name);
+  setInputValue("settingDirectorModel", profile.director_model);
+  setInputValue("settingDirectorMaxTokens", profile.director_max_tokens);
+  setInputValue("settingDirectorTemp", profile.director_temperature);
+  setInputValue("settingDirectorReasoning", profile.director_reasoning_effort || "none");
+  setInputValue("settingCharModel", profile.character_model);
+  setInputValue("settingCharMaxTokens", profile.character_max_tokens);
+  setInputValue("settingCharTemp", profile.character_temperature);
+  setInputValue("settingCharReasoning", profile.character_reasoning_effort || "none");
+  toggleProviderSettings(profile.provider);
+  updateTemperatureControls();
+}
+
+function profileFromForm(profileId) {
+  return {
+    id: profileId,
+    name: document.getElementById("settingProfileName").value.trim() || "Nimetön profiili",
+    provider: document.getElementById("settingProvider").value,
+    xai_api_key: document.getElementById("settingXaiKey").value.trim(),
+    azure_openai_endpoint: document.getElementById("settingAzureEndpoint").value.trim(),
+    azure_openai_api_key: document.getElementById("settingAzureKey").value.trim(),
+    azure_openai_api_version: document.getElementById("settingAzureVersion").value.trim(),
+    azure_deployment_name: document.getElementById("settingAzureDeployment").value.trim(),
+    director_model: document.getElementById("settingDirectorModel").value.trim(),
+    director_max_tokens: Number(document.getElementById("settingDirectorMaxTokens").value),
+    director_temperature: Number(document.getElementById("settingDirectorTemp").value),
+    director_reasoning_effort: document.getElementById("settingDirectorReasoning").value,
+    character_model: document.getElementById("settingCharModel").value.trim(),
+    character_max_tokens: Number(document.getElementById("settingCharMaxTokens").value),
+    character_temperature: Number(document.getElementById("settingCharTemp").value),
+    character_reasoning_effort: document.getElementById("settingCharReasoning").value,
+  };
+}
+
+function persistCurrentSettingsProfile() {
+  const selectedId = document.getElementById("settingsProfileSelect").value;
+  if (!selectedId) return null;
+  const profile = profileFromForm(selectedId);
+  const profiles = getSettingsProfiles().map((item) => item.id === selectedId ? profile : item);
+  saveSettingsProfiles(profiles);
+  renderSettingsProfileSelect();
+  document.getElementById("settingsProfileSelect").value = selectedId;
+  return profile;
+}
+
+function selectSettingsProfile(profileId) {
+  setActiveSettingsProfileId(profileId);
+  populateSettingsProfile(getSettingsProfiles().find((profile) => profile.id === profileId));
+}
+
+function createSettingsProfile(provider) {
+  persistCurrentSettingsProfile();
+  const profiles = getSettingsProfiles();
+  const profile = createProfile(provider, provider === "azure" ? "Azure AI" : "Grok");
+  profiles.push(profile);
+  saveSettingsProfiles(profiles);
+  setActiveSettingsProfileId(profile.id);
+  renderSettingsProfileSelect();
+  document.getElementById("settingsProfileSelect").value = profile.id;
+  populateSettingsProfile(profile);
+  document.getElementById("settingProfileName").focus();
+  document.getElementById("settingProfileName").select();
+}
+
+function deleteSettingsProfile() {
+  const selectedId = document.getElementById("settingsProfileSelect").value;
+  const profiles = getSettingsProfiles();
+  if (profiles.length <= 1) {
+    alert("Vähintään yksi palveluntarjoajaprofiili on säilytettävä.");
+    return;
+  }
+  const remainingProfiles = profiles.filter((profile) => profile.id !== selectedId);
+  saveSettingsProfiles(remainingProfiles);
+  setActiveSettingsProfileId(remainingProfiles[0].id);
+  renderSettingsProfileSelect();
+  populateSettingsProfile(remainingProfiles[0]);
+}
+
 function toggleProviderSettings(provider) {
   const groups = {
     xai: document.getElementById("groupXai"),
     azure: document.getElementById("groupAzure"),
-    openai: document.getElementById("groupOpenai"),
-    openrouter: document.getElementById("groupOpenrouter"),
   };
   Object.entries(groups).forEach(([key, el]) => {
     if (!el) return;
@@ -606,36 +787,38 @@ function toggleProviderSettings(provider) {
       el.classList.add("hidden");
     }
   });
+  updateTemperatureControls();
 }
 
 async function loadSettings() {
   try {
     const res = await fetch("/api/settings");
     const data = await res.json();
-
-    const provider = data.llm_provider || "xai";
-    document.getElementById("settingProvider").value = provider;
-    toggleProviderSettings(provider);
-
-    // Azure-kentät
-    if (data.azure_openai_endpoint) {
-      document.getElementById("settingAzureEndpoint").value = data.azure_openai_endpoint;
+    let profiles = getSettingsProfiles();
+    if (profiles.length === 0) {
+      const profile = createProfile(data.llm_provider === "azure" ? "azure" : "xai", "Nykyiset asetukset");
+      profile.azure_openai_endpoint = data.azure_openai_endpoint || "";
+      profile.azure_openai_api_version = data.azure_openai_api_version || "2024-10-21";
+      profile.azure_deployment_name = data.azure_deployment_name || "";
+      profile.director_model = data.director_model || profile.director_model;
+      profile.director_max_tokens = data.director_max_tokens || profile.director_max_tokens;
+      profile.director_temperature = data.director_temperature ?? profile.director_temperature;
+      profile.director_reasoning_effort = data.director_reasoning_effort || profile.director_reasoning_effort;
+      profile.character_model = data.character_model || profile.character_model;
+      profile.character_max_tokens = data.character_max_tokens || profile.character_max_tokens;
+      profile.character_temperature = data.character_temperature ?? profile.character_temperature;
+      profile.character_reasoning_effort = data.character_reasoning_effort || profile.character_reasoning_effort;
+      profiles = [profile];
+      saveSettingsProfiles(profiles);
+      setActiveSettingsProfileId(profile.id);
     }
-    if (data.azure_openai_api_version) {
-      document.getElementById("settingAzureVersion").value = data.azure_openai_api_version;
-    }
-
-    // Kertojan hienosäädöt
-    if (data.director_model)           document.getElementById("settingDirectorModel").value = data.director_model;
-    if (data.director_max_tokens)      document.getElementById("settingDirectorMaxTokens").value = data.director_max_tokens;
-    if (data.director_temperature)     document.getElementById("settingDirectorTemp").value = data.director_temperature;
-    if (data.director_reasoning_effort) document.getElementById("settingDirectorReasoning").value = data.director_reasoning_effort;
-
-    // Hahmoagenttien hienosäädöt
-    if (data.character_model)           document.getElementById("settingCharModel").value = data.character_model;
-    if (data.character_max_tokens)      document.getElementById("settingCharMaxTokens").value = data.character_max_tokens;
-    if (data.character_temperature)     document.getElementById("settingCharTemp").value = data.character_temperature;
-    if (data.character_reasoning_effort) document.getElementById("settingCharReasoning").value = data.character_reasoning_effort;
+    const activeId = profiles.some((profile) => profile.id === getActiveSettingsProfileId())
+      ? getActiveSettingsProfileId()
+      : profiles[0].id;
+    setActiveSettingsProfileId(activeId);
+    renderSettingsProfileSelect();
+    document.getElementById("settingsProfileSelect").value = activeId;
+    populateSettingsProfile(profiles.find((profile) => profile.id === activeId));
 
   } catch (err) {
     console.error("Virhe haettaessa asetuksia:", err);
@@ -643,41 +826,25 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  const provider = document.getElementById("settingProvider").value;
-  const xaiKey         = document.getElementById("settingXaiKey")?.value.trim();
-  const azureEndpoint  = document.getElementById("settingAzureEndpoint")?.value.trim();
-  const azureKey       = document.getElementById("settingAzureKey")?.value.trim();
-  const azureVersion   = document.getElementById("settingAzureVersion")?.value.trim();
-  const openaiKey      = document.getElementById("settingOpenaiKey")?.value.trim();
-  const openrouterKey  = document.getElementById("settingOpenrouterKey")?.value.trim();
-
-  const dirModel      = document.getElementById("settingDirectorModel").value.trim();
-  const dirMaxTokens  = parseInt(document.getElementById("settingDirectorMaxTokens").value) || undefined;
-  const dirTemp       = parseFloat(document.getElementById("settingDirectorTemp").value) || undefined;
-  const dirReasoning  = document.getElementById("settingDirectorReasoning").value;
-
-  const charModel     = document.getElementById("settingCharModel").value.trim();
-  const charMaxTokens = parseInt(document.getElementById("settingCharMaxTokens").value) || undefined;
-  const charTemp      = parseFloat(document.getElementById("settingCharTemp").value) || undefined;
-  const charReasoning = document.getElementById("settingCharReasoning").value;
+  const profile = persistCurrentSettingsProfile();
+  if (!profile) return;
 
   try {
     const payload = {
-      llm_provider: provider,
-      ...(xaiKey        && { xai_api_key: xaiKey }),
-      ...(azureEndpoint && { azure_openai_endpoint: azureEndpoint }),
-      ...(azureKey      && { azure_openai_api_key: azureKey }),
-      ...(azureVersion  && { azure_openai_api_version: azureVersion }),
-      ...(openaiKey     && { openai_api_key: openaiKey }),
-      ...(openrouterKey && { openrouter_api_key: openrouterKey }),
-      ...(dirModel      && { director_model: dirModel }),
-      ...(dirMaxTokens  && { director_max_tokens: dirMaxTokens }),
-      ...(dirTemp       && { director_temperature: dirTemp }),
-      ...(dirReasoning  && { director_reasoning_effort: dirReasoning }),
-      ...(charModel     && { character_model: charModel }),
-      ...(charMaxTokens && { character_max_tokens: charMaxTokens }),
-      ...(charTemp      && { character_temperature: charTemp }),
-      ...(charReasoning && { character_reasoning_effort: charReasoning }),
+      llm_provider: profile.provider,
+      xai_api_key: profile.xai_api_key,
+      azure_openai_endpoint: profile.azure_openai_endpoint,
+      azure_openai_api_key: profile.azure_openai_api_key,
+      azure_openai_api_version: profile.azure_openai_api_version,
+      azure_deployment_name: profile.azure_deployment_name,
+      director_model: profile.director_model,
+      director_max_tokens: profile.director_max_tokens,
+      director_temperature: profile.director_temperature,
+      director_reasoning_effort: profile.director_reasoning_effort,
+      character_model: profile.character_model,
+      character_max_tokens: profile.character_max_tokens,
+      character_temperature: profile.character_temperature,
+      character_reasoning_effort: profile.character_reasoning_effort,
     };
 
     const res = await fetch("/api/settings", {
@@ -687,6 +854,7 @@ async function saveSettings() {
     });
 
     if (!res.ok) throw new Error("Asetusten tallennus epäonnistui");
+  setActiveSettingsProfileId(profile.id);
     closeSettingsModal();
     alert(t('settingsSavedAlert'));
   } catch (err) {

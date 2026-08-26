@@ -1,8 +1,36 @@
 import json
+import logging
 import re
 import httpx
 from typing import List, Dict, Any, Optional
 from config import settings
+
+logger = logging.getLogger(__name__)
+
+# OpenAI-yhteensopivat palvelut eivät käytä kaikille malliperheille samoja kenttiä.
+# Uudet säännöt lisätään tähän, jotta agenttien kutsukoodi pysyy palveluriippumattomana.
+REQUEST_COMPATIBILITY = {
+    "default": {"token_parameter": "max_tokens"},
+    "azure_foundry_v1": {"token_parameter": "max_tokens"},
+    "azure_foundry_v1:gpt-5": {
+        "token_parameter": "max_completion_tokens",
+        "fixed_temperature": 1,
+    },
+}
+
+
+def request_compatibility(provider: str, base_url: str, model: str) -> Dict[str, Any]:
+    """Palauttaa palveluntarjoaja- ja malliperhekohtaiset request-kentät."""
+    normalized_base_url = base_url.rstrip("/").lower()
+    normalized_model = model.lower()
+
+    if provider == "azure" and normalized_base_url.endswith("/openai/v1"):
+        if normalized_model.startswith("gpt-5"):
+            return REQUEST_COMPATIBILITY["azure_foundry_v1:gpt-5"]
+        return REQUEST_COMPATIBILITY["azure_foundry_v1"]
+
+    return REQUEST_COMPATIBILITY["default"]
+
 
 class LLMClient:
     """Asynkroninen LLM-asiakas, joka tukee xAI Grok-, Azure AI-, OpenAI- ja OpenRouter-rajapintoja."""
@@ -79,13 +107,14 @@ class LLMClient:
 
         if self.provider == "azure":
             clean_base = (self.base_url or "").rstrip("/")
-            if "openai.azure.com" in clean_base:
-                endpoint = f"{clean_base}/openai/deployments/{target_model}/chat/completions?api-version={self.api_version}"
-                headers["api-key"] = self.api_key
-            else:
+            azure_foundry_v1 = clean_base.lower().endswith("/openai/v1")
+            if azure_foundry_v1:
                 endpoint = f"{clean_base}/chat/completions"
                 headers["api-key"] = self.api_key
-                headers["Authorization"] = f"Bearer {self.api_key}"
+            else:
+                deployment = settings.AZURE_DEPLOYMENT_NAME or target_model
+                endpoint = f"{clean_base}/openai/deployments/{deployment}/chat/completions?api-version={self.api_version}"
+                headers["api-key"] = self.api_key
         else:
             endpoint = f"{self.base_url.rstrip('/')}/chat/completions"
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -94,14 +123,17 @@ class LLMClient:
             headers["HTTP-Referer"] = "https://storytimesimulator.local"
             headers["X-Title"] = "StorytimeSimulator"
 
+        compatibility = request_compatibility(self.provider, self.base_url or "", target_model)
+        target_temp = compatibility.get("fixed_temperature", target_temp)
         payload: Dict[str, Any] = {
-            "model": target_model,
             "messages": messages,
             "temperature": target_temp,
         }
+        if self.provider != "azure" or azure_foundry_v1:
+            payload["model"] = target_model
 
         if target_tokens:
-            payload["max_tokens"] = target_tokens
+            payload[compatibility["token_parameter"]] = target_tokens
 
         # Reasoning effort -tuki (jos valittu low, medium, high)
         if target_reasoning and target_reasoning.lower() in ["low", "medium", "high"]:
@@ -109,6 +141,17 @@ class LLMClient:
 
         if response_format:
             payload["response_format"] = response_format
+
+        logger.info(
+            "LLM request: provider=%s endpoint=%s model=%s deployment=%s token_parameter=%s temperature=%s fields=%s",
+            self.provider,
+            endpoint,
+            target_model if "model" in payload else "(not sent)",
+            settings.AZURE_DEPLOYMENT_NAME or target_model if self.provider == "azure" else "-",
+            compatibility["token_parameter"],
+            target_temp,
+            ", ".join(payload.keys()),
+        )
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(endpoint, headers=headers, json=payload)
@@ -120,7 +163,11 @@ class LLMClient:
                     response = await client.post(endpoint, headers=headers, json=payload)
 
             if response.status_code != 200:
-                error_msg = f"LLM API Virhe ({response.status_code}): {response.text}"
+                request_context = (
+                    f" Palveluntarjoaja: {self.provider}. Endpoint: {endpoint}. "
+                    f"Malli: {target_model}."
+                )
+                error_msg = f"LLM API Virhe ({response.status_code}): {response.text}{request_context}"
                 raise RuntimeError(error_msg)
 
             data = response.json()

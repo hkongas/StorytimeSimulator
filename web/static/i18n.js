@@ -111,7 +111,7 @@ const translations = {
     reasoningHigh: "Korkea / Syvä (High)",
 
     closeBtn: "Sulje",
-    saveSettingsBtn: "Tallenna asetukset",
+    saveSettingsBtn: "Tallenna ja aktivoi profiili",
     settingsSavedAlert: "Asetukset tallennettu onnistuneesti!",
 
     // Hahmon Vienti Modali
@@ -246,7 +246,7 @@ const translations = {
     reasoningHigh: "High (Deep Thinking)",
 
     closeBtn: "Close",
-    saveSettingsBtn: "Save Settings",
+    saveSettingsBtn: "Save & Activate Profile",
     settingsSavedAlert: "Settings saved successfully!",
 
     // Character Export Modal

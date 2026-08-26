@@ -313,52 +313,64 @@
     <div id="settingsModal" class="modal-backdrop hidden">
       <div class="modal-card modal-lg">
         <div class="modal-header">
-          <h2 data-i18n="settingsHeader">⚙️ Asetukset & Rajapinnat</h2>
+          <h2 data-i18n="settingsHeader">⚙️ Asetukset &amp; Rajapinnat</h2>
           <button class="modal-close" onclick="closeSettingsModal()">✕</button>
         </div>
         <div class="modal-body">
+          <div class="profile-toolbar">
+            <div class="form-group profile-picker">
+              <label for="settingsProfileSelect">Tallennettu palveluntarjoajaprofiili</label>
+              <select id="settingsProfileSelect" class="styled-select" onchange="selectSettingsProfile(this.value)"></select>
+            </div>
+            <div class="profile-actions">
+              <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('xai')">+ Grok</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('azure')">+ Azure AI</button>
+              <button type="button" class="btn btn-danger btn-xs" onclick="deleteSettingsProfile()">Poista</button>
+            </div>
+          </div>
+
           <div class="form-group">
-            <label data-i18n="settingProviderLabel">LLM Palveluntarjoaja</label>
+            <label for="settingProfileName">Profiilin nimi</label>
+            <input type="text" id="settingProfileName" class="styled-input" placeholder="esim. Oma Grok">
+          </div>
+
+          <div class="form-group">
+            <label for="settingProvider" data-i18n="settingProviderLabel">LLM Palveluntarjoaja</label>
             <select id="settingProvider" class="styled-select" onchange="toggleProviderSettings(this.value)">
-              <option value="xai" data-i18n="settingProviderXai">xAI Grok (Suositus: luovuus ja vapaus)</option>
-              <option value="azure" data-i18n="settingProviderAzure">Azure AI / Azure OpenAI (GPT-5.6 Terra / Luna)</option>
-              <option value="openai" data-i18n="settingProviderOpenai">OpenAI (GPT-4o)</option>
-              <option value="openrouter" data-i18n="settingProviderOpenrouter">OpenRouter (Monimallit)</option>
+              <option value="xai" data-i18n="settingProviderXai">xAI Grok</option>
+              <option value="azure" data-i18n="settingProviderAzure">Azure AI / Azure OpenAI</option>
             </select>
           </div>
 
-          <!-- xAI kenttä -->
           <div id="groupXai" class="form-group">
-            <label data-i18n="settingXaiKeyLabel">xAI API-avain (Grok)</label>
-            <input type="password" id="settingXaiKey" class="styled-input" placeholder="xai-...">
+            <label for="settingXaiKey" data-i18n="settingXaiKeyLabel">xAI API-avain (Grok)</label>
+            <input type="password" id="settingXaiKey" class="styled-input" placeholder="xai-..." autocomplete="off">
           </div>
 
-          <!-- Azure AI kentät -->
           <div id="groupAzure" class="form-group-container hidden">
+            <p class="azure-endpoint-help">
+              <strong>Azure AI Foundry v1:</strong> käytä koko osoitetta <code>https://&lt;resurssi&gt;.cognitiveservices.azure.com/openai/v1/</code>.
+              Tällöin mallikenttiin annetaan Azure AI:ssa luotujen mallien nimet (esim. <code>gpt-5.6-terra</code> ja <code>gpt-5.6-luna</code>), eikä deployment-nimeä tarvita.
+              <strong>Perinteinen Azure OpenAI:</strong> käytä resurssin juuriosoitetta <code>https://&lt;resurssi&gt;.openai.azure.com</code>, API-versiota ja deployment-nimeä.
+            </p>
             <div class="form-group">
-              <label data-i18n="settingAzureEndpointLabel">Azure AI Endpoint (URL)</label>
-              <input type="text" id="settingAzureEndpoint" class="styled-input" placeholder="https://your-resource.openai.azure.com/">
+              <label for="settingAzureEndpoint" data-i18n="settingAzureEndpointLabel">Azure OpenAI -päätepiste</label>
+              <input type="url" id="settingAzureEndpoint" class="styled-input" placeholder="https://oma-resurssi.cognitiveservices.azure.com/openai/v1/">
             </div>
             <div class="form-group">
-              <label data-i18n="settingAzureKeyLabel">Azure AI API-avain</label>
-              <input type="password" id="settingAzureKey" class="styled-input" placeholder="Azure API key">
+              <label for="settingAzureKey" data-i18n="settingAzureKeyLabel">Azure API-avain</label>
+              <input type="password" id="settingAzureKey" class="styled-input" autocomplete="off">
             </div>
-            <div class="form-group">
-              <label data-i18n="settingAzureVersionLabel">Azure API Version</label>
-              <input type="text" id="settingAzureVersion" class="styled-input" placeholder="2024-06-01">
+            <div class="grid-2-col">
+              <div class="form-group">
+                <label for="settingAzureVersion" data-i18n="settingAzureVersionLabel">Azure API-versio</label>
+                <input type="text" id="settingAzureVersion" class="styled-input" placeholder="2024-10-21">
+              </div>
+              <div class="form-group">
+                <label for="settingAzureDeployment">Deployment-nimi (vain perinteinen Azure OpenAI)</label>
+                <input type="text" id="settingAzureDeployment" class="styled-input" placeholder="gpt-4o-production">
+              </div>
             </div>
-          </div>
-
-          <!-- OpenAI kenttä -->
-          <div id="groupOpenai" class="form-group hidden">
-            <label data-i18n="settingOpenaiKeyLabel">OpenAI API-avain</label>
-            <input type="password" id="settingOpenaiKey" class="styled-input" placeholder="sk-...">
-          </div>
-
-          <!-- OpenRouter kenttä -->
-          <div id="groupOpenrouter" class="form-group hidden">
-            <label data-i18n="settingOpenrouterKeyLabel">OpenRouter API-avain</label>
-            <input type="password" id="settingOpenrouterKey" class="styled-input" placeholder="sk-or-...">
           </div>
 
           <hr class="modal-divider">
@@ -378,6 +390,7 @@
               <div class="form-group">
                 <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
                 <input type="number" id="settingDirectorTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.85">
+                <small id="settingDirectorTempNote" class="setting-note hidden">Azure AI Foundry GPT-5 käyttää kiinteää arvoa 1.</small>
               </div>
               <div class="form-group">
                 <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
@@ -408,6 +421,7 @@
               <div class="form-group">
                 <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
                 <input type="number" id="settingCharTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.75">
+                <small id="settingCharTempNote" class="setting-note hidden">Azure AI Foundry GPT-5 käyttää kiinteää arvoa 1.</small>
               </div>
               <div class="form-group">
                 <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
@@ -424,7 +438,7 @@
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onclick="closeSettingsModal()" data-i18n="closeBtn">Sulje</button>
-          <button class="btn btn-primary" onclick="saveSettings()" data-i18n="saveSettingsBtn">Tallenna asetukset</button>
+          <button class="btn btn-primary" onclick="saveSettings()" data-i18n="saveSettingsBtn">Tallenna ja aktivoi profiili</button>
         </div>
       </div>
     </div>

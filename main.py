@@ -12,7 +12,8 @@ def main():
         "web.api:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=True
+        reload=True,
+        log_level="info",
     )
 
 if __name__ == "__main__":

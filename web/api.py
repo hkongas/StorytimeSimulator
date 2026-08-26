@@ -213,6 +213,7 @@ class SettingsUpdate(BaseModel):
     azure_openai_endpoint: Optional[str] = None
     azure_openai_api_key: Optional[str] = None
     azure_openai_api_version: Optional[str] = None
+    azure_deployment_name: Optional[str] = None
     openai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     
@@ -234,6 +235,7 @@ async def get_settings():
         "has_azure_key": bool(settings.AZURE_OPENAI_API_KEY),
         "azure_openai_endpoint": settings.AZURE_OPENAI_ENDPOINT,
         "azure_openai_api_version": settings.AZURE_OPENAI_API_VERSION,
+        "azure_deployment_name": settings.AZURE_DEPLOYMENT_NAME,
         "has_openai_key": bool(settings.OPENAI_API_KEY),
         "has_openrouter_key": bool(settings.OPENROUTER_API_KEY),
         
@@ -260,6 +262,8 @@ async def update_settings(req: SettingsUpdate):
         settings.AZURE_OPENAI_API_KEY = req.azure_openai_api_key
     if req.azure_openai_api_version is not None:
         settings.AZURE_OPENAI_API_VERSION = req.azure_openai_api_version
+    if req.azure_deployment_name is not None:
+        settings.AZURE_DEPLOYMENT_NAME = req.azure_deployment_name
     if req.openai_api_key is not None:
         settings.OPENAI_API_KEY = req.openai_api_key
     if req.openrouter_api_key is not None:
