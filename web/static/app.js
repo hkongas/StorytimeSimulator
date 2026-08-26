@@ -583,6 +583,7 @@ function downloadStory(format) {
 // --- Asetukset ---
 
 function openSettingsModal() {
+  loadSettings();
   document.getElementById("settingsModal").classList.remove("hidden");
 }
 
@@ -590,13 +591,52 @@ function closeSettingsModal() {
   document.getElementById("settingsModal").classList.add("hidden");
 }
 
+function toggleProviderSettings(provider) {
+  const groups = {
+    xai: document.getElementById("groupXai"),
+    azure: document.getElementById("groupAzure"),
+    openai: document.getElementById("groupOpenai"),
+    openrouter: document.getElementById("groupOpenrouter"),
+  };
+  Object.entries(groups).forEach(([key, el]) => {
+    if (!el) return;
+    if (key === provider) {
+      el.classList.remove("hidden");
+    } else {
+      el.classList.add("hidden");
+    }
+  });
+}
+
 async function loadSettings() {
   try {
     const res = await fetch("/api/settings");
     const data = await res.json();
-    document.getElementById("settingProvider").value = data.llm_provider || "xai";
-    document.getElementById("settingDirectorModel").value = data.director_model || "grok-2-latest";
-    document.getElementById("settingCharModel").value = data.character_model || "grok-2-latest";
+
+    const provider = data.llm_provider || "xai";
+    document.getElementById("settingProvider").value = provider;
+    toggleProviderSettings(provider);
+
+    // Azure-kentät
+    if (data.azure_openai_endpoint) {
+      document.getElementById("settingAzureEndpoint").value = data.azure_openai_endpoint;
+    }
+    if (data.azure_openai_api_version) {
+      document.getElementById("settingAzureVersion").value = data.azure_openai_api_version;
+    }
+
+    // Kertojan hienosäädöt
+    if (data.director_model)           document.getElementById("settingDirectorModel").value = data.director_model;
+    if (data.director_max_tokens)      document.getElementById("settingDirectorMaxTokens").value = data.director_max_tokens;
+    if (data.director_temperature)     document.getElementById("settingDirectorTemp").value = data.director_temperature;
+    if (data.director_reasoning_effort) document.getElementById("settingDirectorReasoning").value = data.director_reasoning_effort;
+
+    // Hahmoagenttien hienosäädöt
+    if (data.character_model)           document.getElementById("settingCharModel").value = data.character_model;
+    if (data.character_max_tokens)      document.getElementById("settingCharMaxTokens").value = data.character_max_tokens;
+    if (data.character_temperature)     document.getElementById("settingCharTemp").value = data.character_temperature;
+    if (data.character_reasoning_effort) document.getElementById("settingCharReasoning").value = data.character_reasoning_effort;
+
   } catch (err) {
     console.error("Virhe haettaessa asetuksia:", err);
   }
@@ -604,24 +644,46 @@ async function loadSettings() {
 
 async function saveSettings() {
   const provider = document.getElementById("settingProvider").value;
-  const xaiKey = document.getElementById("settingXaiKey").value.trim();
-  const openaiKey = document.getElementById("settingOpenaiKey").value.trim();
-  const openrouterKey = document.getElementById("settingOpenrouterKey").value.trim();
-  const dirModel = document.getElementById("settingDirectorModel").value.trim();
-  const charModel = document.getElementById("settingCharModel").value.trim();
+  const xaiKey         = document.getElementById("settingXaiKey")?.value.trim();
+  const azureEndpoint  = document.getElementById("settingAzureEndpoint")?.value.trim();
+  const azureKey       = document.getElementById("settingAzureKey")?.value.trim();
+  const azureVersion   = document.getElementById("settingAzureVersion")?.value.trim();
+  const openaiKey      = document.getElementById("settingOpenaiKey")?.value.trim();
+  const openrouterKey  = document.getElementById("settingOpenrouterKey")?.value.trim();
+
+  const dirModel      = document.getElementById("settingDirectorModel").value.trim();
+  const dirMaxTokens  = parseInt(document.getElementById("settingDirectorMaxTokens").value) || undefined;
+  const dirTemp       = parseFloat(document.getElementById("settingDirectorTemp").value) || undefined;
+  const dirReasoning  = document.getElementById("settingDirectorReasoning").value;
+
+  const charModel     = document.getElementById("settingCharModel").value.trim();
+  const charMaxTokens = parseInt(document.getElementById("settingCharMaxTokens").value) || undefined;
+  const charTemp      = parseFloat(document.getElementById("settingCharTemp").value) || undefined;
+  const charReasoning = document.getElementById("settingCharReasoning").value;
 
   try {
+    const payload = {
+      llm_provider: provider,
+      ...(xaiKey        && { xai_api_key: xaiKey }),
+      ...(azureEndpoint && { azure_openai_endpoint: azureEndpoint }),
+      ...(azureKey      && { azure_openai_api_key: azureKey }),
+      ...(azureVersion  && { azure_openai_api_version: azureVersion }),
+      ...(openaiKey     && { openai_api_key: openaiKey }),
+      ...(openrouterKey && { openrouter_api_key: openrouterKey }),
+      ...(dirModel      && { director_model: dirModel }),
+      ...(dirMaxTokens  && { director_max_tokens: dirMaxTokens }),
+      ...(dirTemp       && { director_temperature: dirTemp }),
+      ...(dirReasoning  && { director_reasoning_effort: dirReasoning }),
+      ...(charModel     && { character_model: charModel }),
+      ...(charMaxTokens && { character_max_tokens: charMaxTokens }),
+      ...(charTemp      && { character_temperature: charTemp }),
+      ...(charReasoning && { character_reasoning_effort: charReasoning }),
+    };
+
     const res = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        llm_provider: provider,
-        xai_api_key: xaiKey || undefined,
-        openai_api_key: openaiKey || undefined,
-        openrouter_api_key: openrouterKey || undefined,
-        director_model: dirModel || undefined,
-        character_model: charModel || undefined
-      })
+      body: JSON.stringify(payload)
     });
 
     if (!res.ok) throw new Error("Asetusten tallennus epäonnistui");

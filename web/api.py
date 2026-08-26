@@ -210,36 +210,78 @@ async def export_md(story_id: str):
 class SettingsUpdate(BaseModel):
     llm_provider: Optional[str] = None
     xai_api_key: Optional[str] = None
+    azure_openai_endpoint: Optional[str] = None
+    azure_openai_api_key: Optional[str] = None
+    azure_openai_api_version: Optional[str] = None
     openai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
+    
     director_model: Optional[str] = None
+    director_max_tokens: Optional[int] = None
+    director_temperature: Optional[float] = None
+    director_reasoning_effort: Optional[str] = None
+    
     character_model: Optional[str] = None
+    character_max_tokens: Optional[int] = None
+    character_temperature: Optional[float] = None
+    character_reasoning_effort: Optional[str] = None
 
 @app.get("/api/settings")
 async def get_settings():
     return {
         "llm_provider": settings.LLM_PROVIDER,
         "has_xai_key": bool(settings.XAI_API_KEY),
+        "has_azure_key": bool(settings.AZURE_OPENAI_API_KEY),
+        "azure_openai_endpoint": settings.AZURE_OPENAI_ENDPOINT,
+        "azure_openai_api_version": settings.AZURE_OPENAI_API_VERSION,
         "has_openai_key": bool(settings.OPENAI_API_KEY),
         "has_openrouter_key": bool(settings.OPENROUTER_API_KEY),
+        
         "director_model": settings.DIRECTOR_MODEL,
-        "character_model": settings.CHARACTER_MODEL
+        "director_max_tokens": settings.DIRECTOR_MAX_TOKENS,
+        "director_temperature": settings.DIRECTOR_TEMPERATURE,
+        "director_reasoning_effort": settings.DIRECTOR_REASONING_EFFORT,
+        
+        "character_model": settings.CHARACTER_MODEL,
+        "character_max_tokens": settings.CHARACTER_MAX_TOKENS,
+        "character_temperature": settings.CHARACTER_TEMPERATURE,
+        "character_reasoning_effort": settings.CHARACTER_REASONING_EFFORT
     }
 
 @app.post("/api/settings")
 async def update_settings(req: SettingsUpdate):
     if req.llm_provider:
         settings.LLM_PROVIDER = req.llm_provider
-    if req.xai_api_key:
+    if req.xai_api_key is not None:
         settings.XAI_API_KEY = req.xai_api_key
-    if req.openai_api_key:
+    if req.azure_openai_endpoint is not None:
+        settings.AZURE_OPENAI_ENDPOINT = req.azure_openai_endpoint
+    if req.azure_openai_api_key is not None:
+        settings.AZURE_OPENAI_API_KEY = req.azure_openai_api_key
+    if req.azure_openai_api_version is not None:
+        settings.AZURE_OPENAI_API_VERSION = req.azure_openai_api_version
+    if req.openai_api_key is not None:
         settings.OPENAI_API_KEY = req.openai_api_key
-    if req.openrouter_api_key:
+    if req.openrouter_api_key is not None:
         settings.OPENROUTER_API_KEY = req.openrouter_api_key
+        
     if req.director_model:
         settings.DIRECTOR_MODEL = req.director_model
+    if req.director_max_tokens is not None:
+        settings.DIRECTOR_MAX_TOKENS = req.director_max_tokens
+    if req.director_temperature is not None:
+        settings.DIRECTOR_TEMPERATURE = req.director_temperature
+    if req.director_reasoning_effort is not None:
+        settings.DIRECTOR_REASONING_EFFORT = req.director_reasoning_effort
+
     if req.character_model:
         settings.CHARACTER_MODEL = req.character_model
+    if req.character_max_tokens is not None:
+        settings.CHARACTER_MAX_TOKENS = req.character_max_tokens
+    if req.character_temperature is not None:
+        settings.CHARACTER_TEMPERATURE = req.character_temperature
+    if req.character_reasoning_effort is not None:
+        settings.CHARACTER_REASONING_EFFORT = req.character_reasoning_effort
 
     # Uudelleenalustetaan enginen LLM-asiakas
     engine.llm = engine.director.llm = engine.chronicle.llm = engine.director.llm.__class__()

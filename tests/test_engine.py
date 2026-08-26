@@ -15,10 +15,12 @@ from core.llm_client import LLMClient
 class MockLLMClient(LLMClient):
     """Testivalemalli nopeaan automaattitestaukseen ilman verkkoliikennettä."""
 
-    async def chat_completion(self, messages, model=None, temperature=0.85, max_tokens=4000, response_format=None, timeout=120.0):
+    async def chat_completion(self, messages, model=None, temperature=None, max_tokens=None,
+                              reasoning_effort=None, response_format=None, timeout=120.0, role="director"):
         return "Tämä on testisilmukan generoimaa kaunokirjallista tarinaproosaa. Kuun valo heijastuu puiden oksien läpi."
 
-    async def json_completion(self, messages, model=None, temperature=0.7, max_tokens=4000):
+    async def json_completion(self, messages, model=None, temperature=None, max_tokens=None,
+                              reasoning_effort=None, role="director"):
         content = messages[0]["content"] if messages else ""
         user_content = messages[1]["content"] if len(messages) > 1 else ""
 

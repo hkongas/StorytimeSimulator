@@ -79,7 +79,7 @@ KÄYTTÄJÄN TOIVE / POHJA-AJATUS: {user_idea or 'Keksi omaperäinen ja koukutta
             {"role": "user", "content": user_content}
         ]
 
-        data = await self.llm.json_completion(messages=messages, temperature=0.85)
+        data = await self.llm.json_completion(messages=messages, role="director")
 
         # 1. Tallennetaan StoryMeta tietokantaan
         meta = StoryMeta(
@@ -262,10 +262,10 @@ EDELTÄVÄ TARINATEKSTI:
         ]
 
         try:
-            data = await self.llm.json_completion(messages=messages, temperature=0.85)
+            data = await self.llm.json_completion(messages=messages, role="director")
         except Exception as e:
             # Varalogiikka jos JSON pettää
-            raw_text = await self.llm.chat_completion(messages=messages, temperature=0.85)
+            raw_text = await self.llm.chat_completion(messages=messages, role="director")
             data = {
                 "prose": raw_text,
                 "world_update": "",

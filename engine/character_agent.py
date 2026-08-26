@@ -80,7 +80,7 @@ Palauta VAIN JSON-muotoinen vastaus seuraavalla rakenteella:
         ]
 
         try:
-            result = await self.llm.json_completion(messages=messages, temperature=0.85)
+            result = await self.llm.json_completion(messages=messages, role="character")
         except Exception as e:
             # Fallback jos JSON-jäsennys epäonnistuu
             result = {

@@ -311,7 +311,7 @@
 
     <!-- Asetukset Modali -->
     <div id="settingsModal" class="modal-backdrop hidden">
-      <div class="modal-card">
+      <div class="modal-card modal-lg">
         <div class="modal-header">
           <h2 data-i18n="settingsHeader">⚙️ Asetukset & Rajapinnat</h2>
           <button class="modal-close" onclick="closeSettingsModal()">✕</button>
@@ -319,32 +319,108 @@
         <div class="modal-body">
           <div class="form-group">
             <label data-i18n="settingProviderLabel">LLM Palveluntarjoaja</label>
-            <select id="settingProvider" class="styled-select">
+            <select id="settingProvider" class="styled-select" onchange="toggleProviderSettings(this.value)">
               <option value="xai" data-i18n="settingProviderXai">xAI Grok (Suositus: luovuus ja vapaus)</option>
+              <option value="azure" data-i18n="settingProviderAzure">Azure AI / Azure OpenAI (GPT-5.6 Terra / Luna)</option>
               <option value="openai" data-i18n="settingProviderOpenai">OpenAI (GPT-4o)</option>
               <option value="openrouter" data-i18n="settingProviderOpenrouter">OpenRouter (Monimallit)</option>
             </select>
           </div>
-          <div class="form-group">
+
+          <!-- xAI kenttä -->
+          <div id="groupXai" class="form-group">
             <label data-i18n="settingXaiKeyLabel">xAI API-avain (Grok)</label>
             <input type="password" id="settingXaiKey" class="styled-input" placeholder="xai-...">
           </div>
-          <div class="form-group">
+
+          <!-- Azure AI kentät -->
+          <div id="groupAzure" class="form-group-container hidden">
+            <div class="form-group">
+              <label data-i18n="settingAzureEndpointLabel">Azure AI Endpoint (URL)</label>
+              <input type="text" id="settingAzureEndpoint" class="styled-input" placeholder="https://your-resource.openai.azure.com/">
+            </div>
+            <div class="form-group">
+              <label data-i18n="settingAzureKeyLabel">Azure AI API-avain</label>
+              <input type="password" id="settingAzureKey" class="styled-input" placeholder="Azure API key">
+            </div>
+            <div class="form-group">
+              <label data-i18n="settingAzureVersionLabel">Azure API Version</label>
+              <input type="text" id="settingAzureVersion" class="styled-input" placeholder="2024-06-01">
+            </div>
+          </div>
+
+          <!-- OpenAI kenttä -->
+          <div id="groupOpenai" class="form-group hidden">
             <label data-i18n="settingOpenaiKeyLabel">OpenAI API-avain</label>
             <input type="password" id="settingOpenaiKey" class="styled-input" placeholder="sk-...">
           </div>
-          <div class="form-group">
+
+          <!-- OpenRouter kenttä -->
+          <div id="groupOpenrouter" class="form-group hidden">
             <label data-i18n="settingOpenrouterKeyLabel">OpenRouter API-avain</label>
             <input type="password" id="settingOpenrouterKey" class="styled-input" placeholder="sk-or-...">
           </div>
-          <div class="form-group">
-            <label data-i18n="settingDirectorModelLabel">Pääagentin malli (Director / Kirjailija)</label>
-            <input type="text" id="settingDirectorModel" class="styled-input" placeholder="grok-2-latest">
+
+          <hr class="modal-divider">
+
+          <!-- Kertojan / Pääagentin hienosäädöt -->
+          <div class="tuning-section">
+            <h3 class="tuning-title" data-i18n="directorSettingsSection">🎬 Kertojan / Pääagentin hienosäädöt (Director & Novelist)</h3>
+            <div class="grid-2-col">
+              <div class="form-group">
+                <label data-i18n="modelLabel">Malli</label>
+                <input type="text" id="settingDirectorModel" class="styled-input" placeholder="grok-2-latest / gpt-5.6-terra">
+              </div>
+              <div class="form-group">
+                <label data-i18n="maxTokensLabel">Maksimitokenit</label>
+                <input type="number" id="settingDirectorMaxTokens" class="styled-input" min="500" max="8000" step="100" placeholder="3500">
+              </div>
+              <div class="form-group">
+                <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
+                <input type="number" id="settingDirectorTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.85">
+              </div>
+              <div class="form-group">
+                <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
+                <select id="settingDirectorReasoning" class="styled-select">
+                  <option value="none" data-i18n="reasoningNone">Ei erillistä ajattelua (None)</option>
+                  <option value="low" data-i18n="reasoningLow">Matala (Low)</option>
+                  <option value="medium" selected data-i18n="reasoningMedium">Keskitaso (Medium)</option>
+                  <option value="high" data-i18n="reasoningHigh">Korkea / Syvä (High)</option>
+                </select>
+              </div>
+            </div>
           </div>
-          <div class="form-group">
-            <label data-i18n="settingCharModelLabel">Hahmoagenttien malli (Character Agent)</label>
-            <input type="text" id="settingCharModel" class="styled-input" placeholder="grok-2-latest">
+
+          <hr class="modal-divider">
+
+          <!-- Hahmoagenttien hienosäädöt -->
+          <div class="tuning-section">
+            <h3 class="tuning-title" data-i18n="characterSettingsSection">🧠 Hahmoagenttien hienosäädöt (Character Agents)</h3>
+            <div class="grid-2-col">
+              <div class="form-group">
+                <label data-i18n="modelLabel">Malli</label>
+                <input type="text" id="settingCharModel" class="styled-input" placeholder="grok-2-latest / gpt-5.6-luna">
+              </div>
+              <div class="form-group">
+                <label data-i18n="maxTokensLabel">Maksimitokenit</label>
+                <input type="number" id="settingCharMaxTokens" class="styled-input" min="200" max="2000" step="50" placeholder="600">
+              </div>
+              <div class="form-group">
+                <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
+                <input type="number" id="settingCharTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.75">
+              </div>
+              <div class="form-group">
+                <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
+                <select id="settingCharReasoning" class="styled-select">
+                  <option value="none" data-i18n="reasoningNone">Ei erillistä ajattelua (None)</option>
+                  <option value="low" selected data-i18n="reasoningLow">Matala (Low)</option>
+                  <option value="medium" data-i18n="reasoningMedium">Keskitaso (Medium)</option>
+                  <option value="high" data-i18n="reasoningHigh">Korkea / Syvä (High)</option>
+                </select>
+              </div>
+            </div>
           </div>
+
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" onclick="closeSettingsModal()" data-i18n="closeBtn">Sulje</button>

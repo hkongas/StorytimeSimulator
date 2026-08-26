@@ -757,3 +757,49 @@ body {
   cursor: pointer;
 }
 
+/* Asetusmodalin laajennukset */
+.modal-lg {
+  max-width: 720px;
+}
+
+.modal-divider {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+.form-group-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background-color: rgba(0, 0, 0, 0.2);
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.tuning-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tuning-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--accent-gold);
+}
+
+.grid-2-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 650px) {
+  .grid-2-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+

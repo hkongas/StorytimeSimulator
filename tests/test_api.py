@@ -15,16 +15,22 @@ from config import settings
 async def test_api_endpoints():
     print("\n--- Testataan FastAPI Web API -rajapinnat ---")
     
-    # Asetetaan valemalli engineen
+    # Asetetaan valemalli kaikkialle engineen
     mock_llm = MockLLMClient()
     engine.llm = mock_llm
     engine.director.llm = mock_llm
     engine.chronicle.llm = mock_llm
+    # Päivitetään myös Director- ja Chronicle-agentin sisäiset LLM-viittaukset
+    if hasattr(engine.director, 'llm'):
+        engine.director.llm = mock_llm
+    if hasattr(engine.chronicle, 'llm'):
+        engine.chronicle.llm = mock_llm
 
-    # Siivotaan vanhat testikansiot
-    for item in settings.STORIES_DIR.glob("api_testitarina*"):
-        if item.is_dir():
-            shutil.rmtree(item)
+    # Siivotaan vanhat testikansiot (kaikki tunnetut testitarinat)
+    for pattern in ["api_testitarina*", "api_test*"]:
+        for item in settings.STORIES_DIR.glob(pattern):
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
