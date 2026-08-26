@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StorytimeSimulator / Tarinamoottori</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/i18n.js"></script>
+</head>
+<body class="theme-dark">
+  <div id="app" class="app-container">
+    
+    <!-- Yläpalkki -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand">
+          <span class="brand-icon">📜</span>
+          <span class="brand-name" data-i18n="brandName">Tarinamoottori</span>
+        </div>
+        <div class="story-selector-container">
+          <select id="storySelect" class="styled-select" onchange="loadStory(this.value)">
+            <option value="" disabled selected data-i18n="selectStoryPrompt">Valitse tarina...</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="openNewStoryModal()" data-i18n="newStoryBtn">+ Uusi tarina</button>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <div class="mode-toggles">
+          <button id="modeReaderBtn" class="mode-btn active" onclick="setMode('reader')" data-i18n="modeReader">📖 Lukija</button>
+          <button id="modePlayerBtn" class="mode-btn" onclick="setMode('player')" data-i18n="modePlayer">⚔️ Pelaaja</button>
+          <button id="modeDirectorBtn" class="mode-btn" onclick="setMode('director')" data-i18n="modeDirector">🎭 Ohjaaja</button>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <!-- Kielivalitsin (FI / EN) -->
+        <button id="langToggleBtn" class="btn btn-lang" title="Vaihda kieli / Switch language" onclick="toggleLanguage()">🌐 FI</button>
+
+        <div class="export-dropdown">
+          <button class="btn btn-icon" data-i18n-title="exportBtn" onclick="toggleExportMenu()" data-i18n="exportBtn">📥 Vie</button>
+          <div id="exportMenu" class="dropdown-menu hidden">
+            <button onclick="downloadStory('txt')" data-i18n="exportTxt">Lataa Tekstitiedostona (.txt)</button>
+            <button onclick="downloadStory('md')" data-i18n="exportMd">Lataa Markdownina (.md)</button>
+          </div>
+        </div>
+        <button class="btn btn-icon" data-i18n-title="settingsTooltip" onclick="openSettingsModal()">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Pääsisältöalue (Kirjanäkymä + Sivupaneeli) -->
+    <main class="main-layout">
+      
+      <!-- Kirjanlukunäkymä -->
+      <section class="book-container">
+        <div class="book-header" id="bookHeader">
+          <h1 id="storyTitle" class="story-title" data-i18n="defaultStoryTitle">Valitse tai luo tarina</h1>
+          <p id="storyGenre" class="story-genre" data-i18n="defaultStoryGenre">Genre: -</p>
+        </div>
+
+        <div id="storyScrollArea" class="story-content">
+          <div id="emptyStoryNotice" class="empty-state">
+            <div class="empty-icon">📖</div>
+            <h3 data-i18n="emptyStoryTitle">Ei avointa tarinaa</h3>
+            <p data-i18n="emptyStoryDesc">Aloita luomalla uusi seikkailu tai valitse aiempi tarina yläpalkista.</p>
+            <button class="btn btn-primary" onclick="openNewStoryModal()" data-i18n="createFirstStoryBtn">Luo uusi tarina</button>
+          </div>
+          <!-- Generoidut proosakappaleet renderöityvät tähän -->
+          <div id="proseStream" class="prose-stream hidden"></div>
+        </div>
+
+        <!-- Alatoimintapalkki -->
+        <footer class="action-bar-container">
+          <div id="loadingIndicator" class="loading-bar hidden">
+            <div class="spinner"></div>
+            <span id="loadingStatusText" data-i18n="loadingStatusDefault">Agentit simuloivat tapahtumia ja kirjoittavat proosaa...</span>
+          </div>
+
+          <div class="action-bar" id="actionBar">
+            <!-- Lukijatilan syöte -->
+            <div id="readerControls" class="control-group">
+              <input type="text" id="readerInput" class="styled-input" data-i18n-placeholder="readerPlaceholder" placeholder="Valinnainen toive tai käänne (esim. 'Yllättävä koputus ovelle')...">
+              <button id="advanceBtn" class="btn btn-primary btn-action" onclick="advanceStory()">
+                <span data-i18n="readerAdvanceBtn">📖 Jatka tarinaa</span>
+              </button>
+            </div>
+
+            <!-- Pelaajatilan syöte -->
+            <div id="playerControls" class="control-group hidden">
+              <div class="player-tag" id="playerTag" data-i18n="playerTagDefault">⚔️ Pelaajahahmo</div>
+              <input type="text" id="playerInput" class="styled-input" data-i18n-placeholder="playerPlaceholder" placeholder="Mitä teet tai sanot? (esim. 'Nostan katseeni ja kysyn: Kuka olet?')">
+              <button id="playerActBtn" class="btn btn-accent btn-action" onclick="advanceStory()">
+                <span data-i18n="playerActBtn">⚔️ Toimi</span>
+              </button>
+            </div>
+
+            <!-- Ohjaajatilan syöte -->
+            <div id="directorControls" class="control-group hidden">
+              <input type="text" id="directorInput" class="styled-input" data-i18n-placeholder="directorPlaceholder" placeholder="Ohjaajan salainen komento (esim. 'Hahmojen välille syntyy riita kadonneesta avaimesta')...">
+              <button id="directorActBtn" class="btn btn-primary btn-action" onclick="advanceStory()">
+                <span data-i18n="directorActBtn">🎭 Ohjaa & Jatka</span>
+              </button>
+            </div>
+          </div>
+        </footer>
+      </section>
+
+      <!-- Oikea tarkastelu- ja muistipaneeli (Inspector) -->
+      <aside class="inspector-panel" id="inspectorPanel">
+        <div class="inspector-tabs">
+          <button class="tab-btn active" onclick="switchInspectorTab('characters')" data-i18n="tabCharacters">🧠 Hahmojen mieli</button>
+          <button class="tab-btn" onclick="switchInspectorTab('lore')" data-i18n="tabLore">🗺️ Maailma</button>
+          <button class="tab-btn" onclick="switchInspectorTab('director')" data-i18n="tabDirector">🎬 Juoni & Ohjaaja</button>
+        </div>
+
+        <!-- Hahmonäkymä -->
+        <div id="tabCharacters" class="tab-content active">
+          <!-- Hahmonhallinnan työkalupalkki -->
+          <div class="char-management-toolbar">
+            <button class="btn btn-secondary btn-xs" onclick="openImportCharModal()" data-i18n="importCharBtn">📥 Tuo hahmo</button>
+            <button id="exportCharBtn" class="btn btn-secondary btn-xs" onclick="openExportCharModal()" data-i18n="exportCharBtn">📤 Vie hahmo</button>
+          </div>
+
+          <div class="character-selector-list" id="charList">
+            <!-- Hahmokortit renderöityvät tähän -->
+          </div>
+          <div id="charDetailView" class="char-detail-view hidden">
+            <h3 id="charDetailName" class="char-title">Hahmon Nimi</h3>
+            <div class="char-badge-row">
+              <span id="charAgeBadge" class="badge">Ikä: -</span>
+              <span id="charRoleBadge" class="badge badge-accent">NPC</span>
+            </div>
+            
+            <div class="state-box">
+              <div class="state-item">
+                <strong data-i18n="physicalStateLabel">❤️ Fyysinen vointi:</strong>
+                <p id="charPhysicalState">-</p>
+              </div>
+              <div class="state-item">
+                <strong data-i18n="mentalStateLabel">🧠 Henkinen tila & Tunteet:</strong>
+                <p id="charMentalState">-</p>
+              </div>
+              <div class="state-item">
+                <strong data-i18n="secretMotiveLabel">🎯 Salainen motiivi:</strong>
+                <p id="charSecretMotive" class="secret-text">-</p>
+              </div>
+            </div>
+
+            <div class="memory-stream-container">
+              <h4 data-i18n="memoryStreamTitle">💭 Yksityinen muistivirta</h4>
+              <ul id="charMemoryList" class="memory-list">
+                <li data-i18n="noMemoriesYet">Ei vielä muistikuvia.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Maailman lorenäkymä -->
+        <div id="tabLore" class="tab-content">
+          <div class="lore-container">
+            <h3 data-i18n="worldLoreHeading">🌍 Maailman yleistieto & Säännöt</h3>
+            <div id="worldLoreContent" class="lore-text">Ei maailmankuvausta saatavilla.</div>
+            
+            <h3 class="mt-4" data-i18n="chronicleHeading">📜 Tapahtumakronikka (Chronicle)</h3>
+            <div id="chronicleList" class="chronicle-list">
+              <p class="text-muted" data-i18n="noChronicleYet">Ei kronikkakirjauksia vielä.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ohjaajan juonisuunnitelma -->
+        <div id="tabDirector" class="tab-content">
+          <div class="director-container">
+            <h3 data-i18n="directorPlotHeading">🎭 Salainen juonisuunnitelma</h3>
+            <div id="directorPlotContent" class="secret-plot-box">Ei juonisuunnitelmaa.</div>
+
+            <h3 class="mt-4" data-i18n="directorNotesHeading">📝 Ohjaajan muistiinpanot</h3>
+            <div id="directorNotesContent" class="notes-box">Ei muistiinpanoja.</div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Uusi Tarina Modali -->
+    <div id="newStoryModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 data-i18n="newStoryHeader">✨ Luo uusi tarina / roolipeli</h2>
+          <button class="modal-close" onclick="closeNewStoryModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label data-i18n="newStoryTitleLabel">Tarinan Otsikko *</label>
+            <input type="text" id="newTitle" class="styled-input" data-i18n-placeholder="newStoryTitlePlaceholder" placeholder="esim. Varjojen Laakso, Tähtiristelijä Orion, Murha Kartanossa">
+          </div>
+          <div class="form-group">
+            <label data-i18n="newStoryGenreLabel">Genre / Tyylilaji</label>
+            <input type="text" id="newGenre" class="styled-input" data-i18n-placeholder="newStoryGenrePlaceholder" placeholder="esim. Tumma Fantasia, Kyberpunk, Psykologinen Trilleri, Sci-Fi">
+          </div>
+          <div class="form-group">
+            <label data-i18n="newStoryIdeaLabel">Tarinan pohja-ajatus / Lähtötilanne</label>
+            <textarea id="newIdea" class="styled-textarea" rows="3" data-i18n-placeholder="newStoryIdeaPlaceholder" placeholder="Kuvaile lyhyesti mistä tarina alkaa ja minkälainen maailma on..."></textarea>
+          </div>
+          <div class="form-group">
+            <label data-i18n="newStoryPlotIdeaLabel">Salainen Juoni-idea (Valinnainen)</label>
+            <textarea id="newPlotIdea" class="styled-textarea" rows="2" data-i18n-placeholder="newStoryPlotIdeaPlaceholder" placeholder="Jos sinulla on mielessä tietty juonenkäänne tai salaisuus, jonka Pääagentti tietää hahmoilta salassa..."></textarea>
+          </div>
+
+          <div class="form-group">
+            <label data-i18n="newStoryRoleLabel">Roolisi tarinassa</label>
+            <select id="newUserRole" class="styled-select" onchange="togglePlayerFields(this.value)">
+              <option value="reader" data-i18n="newStoryRoleReaderOpt">📖 Lukija (Tekoäly luo ja ohjaa hahmoja, voit seurata ja ohjata tarinaa)</option>
+              <option value="player" data-i18n="newStoryRolePlayerOpt">⚔️ Pelaaja (Otat yhden hahmon ohjaukseesi)</option>
+            </select>
+          </div>
+
+          <div id="playerCharFields" class="player-char-fields hidden">
+            <div class="form-group">
+              <label data-i18n="playerCharNameLabel">Pelaajahahmosi Nimi</label>
+              <input type="text" id="newPlayerCharName" class="styled-input" data-i18n-placeholder="playerCharNamePlaceholder" placeholder="esim. Eerik">
+            </div>
+            <div class="form-group">
+              <label data-i18n="playerCharDetailsLabel">Pelaajahahmon taustat ja toiveet</label>
+              <input type="text" id="newPlayerCharDetails" class="styled-input" data-i18n-placeholder="playerCharDetailsPlaceholder" placeholder="esim. Entinen ritari, kantaa salattua sormusta, hiljainen luonne">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeNewStoryModal()" data-i18n="cancelBtn">Peruuta</button>
+          <button class="btn btn-primary" onclick="submitNewStory()" data-i18n="createStorySubmitBtn">🚀 Luo maailma & Aloita</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hahmon Vienti Modali -->
+    <div id="exportCharModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 data-i18n="exportCharHeader">📤 Vie hahmo (Storytime Character Card)</h2>
+          <button class="modal-close" onclick="closeExportCharModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-intro" data-i18n="exportCharDesc">Valitse mitä tietoja haluat sisällyttää vietävään hahmokorttiin:</p>
+          
+          <div class="checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="exportCheckProfile" checked disabled>
+              <span data-i18n="exportIncludeProfile">Perustiedot & Persoona (Nimi, ikä, ulkonäkö, luonne, kuvaus)</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="exportCheckState" checked>
+              <span data-i18n="exportIncludeState">Nykyinen tila & Salainen motiivi (Fyysinen & henkinen vointi, salainen tavoite)</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="exportCheckMemories" checked>
+              <span data-i18n="exportIncludeMemories">Hahmon muistivirta (Tarinan aikana kertyneet muistijäljet)</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeExportCharModal()" data-i18n="cancelBtn">Peruuta</button>
+          <button class="btn btn-primary" onclick="executeExportCharacter()" data-i18n="downloadCharJsonBtn">💾 Lataa JSON-kortti</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hahmon Tuonti Modali -->
+    <div id="importCharModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 data-i18n="importCharHeader">📥 Tuo hahmo tarinaan</h2>
+          <button class="modal-close" onclick="closeImportCharModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-intro" data-i18n="importCharDesc">Tuo aiemmin viety hahmokortti tähän tarinaan:</p>
+          
+          <div class="form-group">
+            <label data-i18n="importFileLabel">Valitse JSON-tiedosto (.json):</label>
+            <input type="file" id="importFileInput" accept=".json" class="styled-file-input" onchange="handleImportFileSelect(event)">
+          </div>
+
+          <div class="form-group">
+            <label data-i18n="importPasteLabel">Tai liitä JSON suoraan tähän:</label>
+            <textarea id="importJsonText" class="styled-textarea" rows="4" placeholder='{"format": "storytime_character", ...}'></textarea>
+          </div>
+
+          <div class="checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="importCheckState" checked>
+              <span data-i18n="importIncludeState">Tuo hahmon nykyinen tila & salainen motiivi</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="importCheckMemories" checked>
+              <span data-i18n="importIncludeMemories">Tuo hahmon aiemmat muistit</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="importCheckAsPlayer">
+              <span data-i18n="importAsPlayerCheckbox">Aseta tämä hahmo pelaajan ohjaamaksi (⚔️ Pelaaja)</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeImportCharModal()" data-i18n="cancelBtn">Peruuta</button>
+          <button class="btn btn-primary" onclick="executeImportCharacter()" data-i18n="executeImportBtn">📥 Tuo hahmo tarinaan</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Asetukset Modali -->
+    <div id="settingsModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 data-i18n="settingsHeader">⚙️ Asetukset & Rajapinnat</h2>
+          <button class="modal-close" onclick="closeSettingsModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label data-i18n="settingProviderLabel">LLM Palveluntarjoaja</label>
+            <select id="settingProvider" class="styled-select">
+              <option value="xai" data-i18n="settingProviderXai">xAI Grok (Suositus: luovuus ja vapaus)</option>
+              <option value="openai" data-i18n="settingProviderOpenai">OpenAI (GPT-4o)</option>
+              <option value="openrouter" data-i18n="settingProviderOpenrouter">OpenRouter (Monimallit)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label data-i18n="settingXaiKeyLabel">xAI API-avain (Grok)</label>
+            <input type="password" id="settingXaiKey" class="styled-input" placeholder="xai-...">
+          </div>
+          <div class="form-group">
+            <label data-i18n="settingOpenaiKeyLabel">OpenAI API-avain</label>
+            <input type="password" id="settingOpenaiKey" class="styled-input" placeholder="sk-...">
+          </div>
+          <div class="form-group">
+            <label data-i18n="settingOpenrouterKeyLabel">OpenRouter API-avain</label>
+            <input type="password" id="settingOpenrouterKey" class="styled-input" placeholder="sk-or-...">
+          </div>
+          <div class="form-group">
+            <label data-i18n="settingDirectorModelLabel">Pääagentin malli (Director / Kirjailija)</label>
+            <input type="text" id="settingDirectorModel" class="styled-input" placeholder="grok-2-latest">
+          </div>
+          <div class="form-group">
+            <label data-i18n="settingCharModelLabel">Hahmoagenttien malli (Character Agent)</label>
+            <input type="text" id="settingCharModel" class="styled-input" placeholder="grok-2-latest">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeSettingsModal()" data-i18n="closeBtn">Sulje</button>
+          <button class="btn btn-primary" onclick="saveSettings()" data-i18n="saveSettingsBtn">Tallenna asetukset</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

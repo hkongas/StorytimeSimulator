@@ -1,0 +1,33 @@
+# Environment & API Keys
+.env
+.env.*
+!.env.example
+*.key
+
+# User Stories, SQLite Databases & Generated Prose
+stories/
+*.db
+*.sqlite
+*.sqlite3
+*.txt
+!requirements.txt
+story.md
+
+# Python Virtual Environment & Bytecode
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# IDE & OS Specific
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

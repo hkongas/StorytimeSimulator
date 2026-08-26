@@ -1,0 +1,75 @@
+-- Tarinaprojektin perustiedot ja maailma
+CREATE TABLE IF NOT EXISTS story_meta (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    genre TEXT DEFAULT 'Seikkailu',
+    world_lore TEXT DEFAULT '',
+    director_plot_arc TEXT DEFAULT '',
+    director_notes TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tiivistetty tapahtumahistoria (Chronicle)
+CREATE TABLE IF NOT EXISTS chronicle_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chapter_index INTEGER DEFAULT 1,
+    scene_index INTEGER DEFAULT 1,
+    summary TEXT NOT NULL,
+    world_updates TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Hahmot ja niiden tilat
+CREATE TABLE IF NOT EXISTS characters (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    age INTEGER DEFAULT 25,
+    gender TEXT,
+    appearance TEXT DEFAULT '',
+    personality TEXT DEFAULT '',
+    is_player_controlled BOOLEAN DEFAULT 0,
+    physical_state TEXT DEFAULT 'Terve ja hyväkuntoinen',
+    mental_state TEXT DEFAULT 'Rauhallinen ja tarkkaavainen',
+    secret_motive TEXT DEFAULT '',
+    public_bio TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Hahmojen yksityinen muistivirta (Memory Stream)
+CREATE TABLE IF NOT EXISTS character_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id TEXT NOT NULL,
+    scene_index INTEGER DEFAULT 0,
+    memory_type TEXT DEFAULT 'observation',
+    content TEXT NOT NULL,
+    importance_score REAL DEFAULT 1.0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
+);
+
+-- Kohtaukset ja luvut
+CREATE TABLE IF NOT EXISTS scenes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chapter_number INTEGER DEFAULT 1,
+    location TEXT NOT NULL,
+    scene_goal TEXT DEFAULT '',
+    active_character_ids TEXT DEFAULT '[]', -- JSON-lista hahmojen ID:istä
+    is_active BOOLEAN DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Yksittäiset tarinavuorot ja proosakappaleet
+CREATE TABLE IF NOT EXISTS scene_turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scene_id INTEGER NOT NULL,
+    turn_index INTEGER NOT NULL,
+    acting_character_id TEXT,
+    perceived_context TEXT DEFAULT '',
+    internal_monologue TEXT DEFAULT '',
+    character_action TEXT DEFAULT '',
+    director_prose TEXT NOT NULL,
+    image_prompt TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+);
