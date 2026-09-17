@@ -2,6 +2,8 @@ import asyncio
 import os
 import sys
 import shutil
+import tempfile
+import unittest
 from pathlib import Path
 
 # Lisätään projektin juuri polkuun
@@ -131,12 +133,82 @@ async def test_api_endpoints():
         assert imported_res["character"]["name"] == "Korpivaeltaja Aarni"
         print("9. POST .../characters/import OK: Hahmo 'Korpivaeltaja Aarni' tuotu onnistuneesti.")
 
-    # Siivotaan
-    for item in settings.STORIES_DIR.glob("api_testitarina*"):
-        if item.is_dir():
-            shutil.rmtree(item)
+        # 10. Testaa Hahmon tietojen päivitys lennosta: POST .../update
+        update_payload = {
+            "physical_state": "Haavoittunut käteen",
+            "mental_state": "Pelokas ja valpas"
+        }
+        res = await client.post(f"/api/stories/{story_id}/characters/{first_char_id}/update", json=update_payload)
+        assert res.status_code == 200
+        assert res.json()["character"]["physical_state"] == "Haavoittunut käteen"
+        print(f"10. POST .../characters/{first_char_id}/update OK: Fyysinen tila päivitetty.")
+
+        # 11. Testaa Pelaajahahmon asetus: POST .../set_player
+        res = await client.post(f"/api/stories/{story_id}/characters/{first_char_id}/set_player")
+        assert res.status_code == 200
+        assert res.json()["character"]["is_player_controlled"] is True
+        print(f"11. POST .../characters/{first_char_id}/set_player OK: Asetettu pelaajan hahmoksi.")
+
+        # 12. Testaa Tarinan poisto: DELETE /api/stories/{story_id}
+        res = await client.delete(f"/api/stories/{story_id}")
+        assert res.status_code == 200
+        assert not (settings.STORIES_DIR / story_id).exists()
+        print(f"12. DELETE /api/stories/{story_id} OK: Tarina ja kansio poistettu.")
 
     print("\n[OK] Kaikki API-testit lapaisty onnistuneesti!\n")
 
+class ApiTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.original_dir = settings.STORIES_DIR
+        self.original_base = settings.BASE_DIR
+        settings.STORIES_DIR = Path(self.temporary.name)
+        settings.BASE_DIR = Path(self.temporary.name)
+        import web.api as api
+        api.jobs.clear()
+        engine.llm = engine.director.llm = engine.chronicle.llm = MockLLMClient()
+        self.client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        settings.STORIES_DIR = self.original_dir
+        settings.BASE_DIR = self.original_base
+        self.temporary.cleanup()
+
+    async def test_existing_api_cycle(self):
+        await test_api_endpoints()
+
+    async def test_background_job_replay_and_origin(self):
+        import web.api as api
+        created = await self.client.post("/api/stories", json={"title": "Job test"})
+        story_id = created.json()["data"]["story_id"]
+        endpoint = f"/api/stories/{story_id}/turn-jobs"
+        request = {"mode": "novel", "request_id": "same-request"}
+        response = await self.client.post(endpoint, json=request)
+        self.assertEqual(response.status_code, 200)
+        await asyncio.gather(*api.background_tasks)
+        completed = await self.client.get(endpoint + "/same-request")
+        self.assertEqual(completed.json()["status"], "completed")
+        api.jobs.clear()
+        replay = await self.client.get(endpoint + "/same-request")
+        self.assertEqual(replay.json()["data"]["turn_index"], 2)
+        blocked = await self.client.post(endpoint, json=request, headers={"Origin": "https://outside.example"})
+        self.assertEqual(blocked.status_code, 403)
+
+    async def test_prompt_paths_reject_escape(self):
+        response = await self.client.get("/api/prompts/content", params={"path": "../../config.py"})
+        self.assertEqual(response.status_code, 400)
+
+    async def test_profile_secrets_are_not_returned(self):
+        response = await self.client.post("/api/settings/profile-secrets", json={"profiles": [{"id": "first", "xai_api_key": "synthetic-test-value"}, {"id": "second", "azure_openai_api_key": "other-test-value"}]})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("synthetic-test-value", response.text)
+        from core.profile_store import load_profiles
+        self.assertEqual(load_profiles()["first"]["xai_api_key"], "synthetic-test-value")
+        self.assertNotIn("synthetic-test-value", (await self.client.get("/api/settings")).text)
+        response = await self.client.post("/api/prompts/save", json={"path": "../outside.txt", "content": "test"})
+        self.assertEqual(response.status_code, 400)
+
+
 if __name__ == "__main__":
-    asyncio.run(test_api_endpoints())
+    unittest.main()

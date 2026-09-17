@@ -37,9 +37,10 @@ class Settings:
 
     # Hahmoagenttien hienosäädöt (Character Agents)
     CHARACTER_MODEL: str = os.getenv("CHARACTER_MODEL", "grok-4.3")
-    CHARACTER_MAX_TOKENS: int = int(os.getenv("CHARACTER_MAX_TOKENS", "600"))
+    CHARACTER_MAX_TOKENS: int = int(os.getenv("CHARACTER_MAX_TOKENS", "1200"))
     CHARACTER_TEMPERATURE: float = float(os.getenv("CHARACTER_TEMPERATURE", "0.75"))
-    CHARACTER_REASONING_EFFORT: str = os.getenv("CHARACTER_REASONING_EFFORT", "low")
+    CHARACTER_REASONING_EFFORT: str = os.getenv("CHARACTER_REASONING_EFFORT", "none")
+    MAX_INPUT_TOKENS: int = int(os.getenv("MAX_INPUT_TOKENS", "64000"))
 
     # Palvelimen asetukset
     HOST: str = os.getenv("HOST", "127.0.0.1")

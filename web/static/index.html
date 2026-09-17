@@ -6,77 +6,170 @@
   <title>StorytimeSimulator / Tarinamoottori</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/i18n.js"></script>
 </head>
 <body class="theme-dark">
-  <div id="app" class="app-container">
+  <div id="app" class="app-layout">
     
-    <!-- Yläpalkki -->
-    <header class="app-header">
-      <div class="header-left">
-        <div class="brand">
-          <span class="brand-icon">📜</span>
-          <span class="brand-name" data-i18n="brandName">Tarinamoottori</span>
+    <!-- Vasen kutistuva sivupalkki (Collapsible Sidebar) -->
+    <aside id="appSidebar" class="app-sidebar">
+      <div class="sidebar-top">
+        <button class="btn btn-primary btn-new-story" onclick="openNewStoryModal()">
+          <span class="btn-icon-symbol">+</span>
+          <span class="sidebar-text" data-i18n="newStoryBtn">Uusi tarina</span>
+        </button>
+      </div>
+
+      <div class="sidebar-stories-section">
+        <div class="sidebar-section-title">
+          <span class="sidebar-text">Tarinat</span>
         </div>
-        <div class="story-selector-container">
-          <select id="storySelect" class="styled-select" onchange="loadStory(this.value)">
-            <option value="" disabled selected data-i18n="selectStoryPrompt">Valitse tarina...</option>
-          </select>
-          <button class="btn btn-secondary btn-sm" onclick="openNewStoryModal()" data-i18n="newStoryBtn">+ Uusi tarina</button>
+        <div id="sidebarStoryList" class="sidebar-story-list">
+          <!-- Tarinalista renderöityy dynaamisesti tähän -->
         </div>
       </div>
 
-      <div class="header-center">
-        <div class="mode-toggles">
-          <button id="modeReaderBtn" class="mode-btn active" onclick="setMode('reader')" data-i18n="modeReader">📖 Lukija</button>
-          <button id="modePlayerBtn" class="mode-btn" onclick="setMode('player')" data-i18n="modePlayer">⚔️ Pelaaja</button>
-          <button id="modeDirectorBtn" class="mode-btn" onclick="setMode('director')" data-i18n="modeDirector">🎭 Ohjaaja</button>
-        </div>
-      </div>
-
-      <div class="header-right">
-        <!-- Kielivalitsin (FI / EN) -->
-        <button id="langToggleBtn" class="btn btn-lang" title="Vaihda kieli / Switch language" onclick="toggleLanguage()">🌐 FI</button>
-
-        <div class="export-dropdown">
-          <button class="btn btn-icon" data-i18n-title="exportBtn" onclick="toggleExportMenu()" data-i18n="exportBtn">📥 Vie</button>
-          <div id="exportMenu" class="dropdown-menu hidden">
-            <button onclick="downloadStory('txt')" data-i18n="exportTxt">Lataa Tekstitiedostona (.txt)</button>
-            <button onclick="downloadStory('md')" data-i18n="exportMd">Lataa Markdownina (.md)</button>
+      <div class="sidebar-footer">
+        <!-- Väriteeman pikavalitsin -->
+        <div class="theme-palette-picker">
+          <span class="theme-label sidebar-text">Teema:</span>
+          <div class="palette-dots">
+            <button class="palette-dot dot-amber" onclick="setAccentTheme('amber')" title="Meripihka / Kulta"></button>
+            <button class="palette-dot dot-cyan" onclick="setAccentTheme('cyan')" title="Neon Syaani"></button>
+            <button class="palette-dot dot-crimson" onclick="setAccentTheme('crimson')" title="Karmiini / Viininpunainen"></button>
+            <button class="palette-dot dot-emerald" onclick="setAccentTheme('emerald')" title="Smaragdi"></button>
+            <button class="palette-dot dot-purple" onclick="setAccentTheme('purple')" title="Ametisti / Indigo"></button>
+            <button class="palette-dot dot-blue" onclick="setAccentTheme('blue')" title="Sähkönsininen"></button>
+            <button class="palette-dot dot-mono" onclick="setAccentTheme('mono')" title="Monokromaattinen"></button>
           </div>
         </div>
-        <button class="btn btn-icon" data-i18n-title="settingsTooltip" onclick="openSettingsModal()">⚙️</button>
-      </div>
-    </header>
 
-    <!-- Pääsisältöalue (Kirjanäkymä + Sivupaneeli) -->
-    <main class="main-layout">
+        <div class="sidebar-action-buttons">
+          <button class="btn btn-sidebar-item" onclick="openPromptEditorModal()" title="Muokkaa system prompteja ja sävyprofiileja">
+            <span class="btn-symbol">✎</span>
+            <span class="sidebar-text">Promptit & Sävy</span>
+          </button>
+          <button id="langToggleBtn" class="btn btn-sidebar-item" onclick="toggleLanguage()" title="Vaihda kieli / Switch language">
+            <span class="btn-symbol">🌐</span>
+            <span class="sidebar-text">Kieli (FI)</span>
+          </button>
+          <button class="btn btn-sidebar-item" onclick="openSettingsModal()" title="Rajapinta-asetukset">
+            <span class="btn-symbol">⚙</span>
+            <span class="sidebar-text">Asetukset</span>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Keskialue: Tarinateksti ja ylä/alapalkit -->
+    <div class="main-content-wrapper">
       
-      <!-- Kirjanlukunäkymä -->
-      <section class="book-container">
-        <div class="book-header" id="bookHeader">
-          <h1 id="storyTitle" class="story-title" data-i18n="defaultStoryTitle">Valitse tai luo tarina</h1>
-          <p id="storyGenre" class="story-genre" data-i18n="defaultStoryGenre">Genre: -</p>
+      <!-- Minimalistinen yläpalkki -->
+      <header class="app-header">
+        <div class="header-left">
+          <button id="sidebarToggleBtn" class="btn-icon btn-toggle-sidebar" onclick="toggleSidebar()" title="Piilota / Avaa sivupalkki">
+            <span class="menu-icon">☰</span>
+          </button>
+          <div class="story-title-group">
+            <h1 id="storyTitle" class="story-title" data-i18n="defaultStoryTitle">Valitse tai luo tarina</h1>
+            <span id="storyToneBadge" class="tone-badge hidden">Default</span>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <!-- API & Token-käyttömittari / Debug-nappi -->
+          <button id="tokenStatsBadge" class="btn btn-secondary btn-sm token-stats-badge hidden" onclick="openDebugLogsModal()" title="Klikkaa avataksesi API- ja token-lokitiedot">
+            <span class="badge-icon">⚡</span>
+            <span id="tokenStatsText">0 tkn</span>
+          </button>
+
+          <!-- Vientivalikko -->
+          <div class="export-dropdown">
+            <button class="btn btn-secondary btn-sm" onclick="toggleExportMenu()" data-i18n="exportBtn">Vie ▾</button>
+            <div id="exportMenu" class="dropdown-menu hidden">
+              <button onclick="downloadStory('txt')" data-i18n="exportTxt">Lataa Tekstitiedostona (.txt)</button>
+              <button onclick="downloadStory('md')" data-i18n="exportMd">Lataa Markdownina (.md)</button>
+            </div>
+          </div>
+
+          <!-- Tarinan poistonappi nykyiselle tarinalle -->
+          <button id="deleteCurrentStoryBtn" class="btn btn-danger-outline btn-sm hidden" onclick="deleteCurrentActiveStory()" title="Poista tämä tarina">
+            ✕ Poista
+          </button>
+
+          <!-- Oikean paneelin toggle mobiilille / kapealle näytölle -->
+          <button class="btn-icon btn-toggle-inspector" onclick="toggleInspector()" title="Avaa / sulje tietopaneeli">
+            ℹ
+          </button>
+        </div>
+      </header>
+
+      <!-- Reaaliaikainen Agenttityöskentelyn Tilanäkymä (Live Agent Bar) -->
+      <div id="liveAgentBar" class="live-agent-bar hidden">
+        <div class="agent-status-indicator">
+          <span class="pulsing-dot"></span>
+          <span id="livePhaseText" class="live-phase-text">Agentit simuloivat...</span>
+        </div>
+        <div id="liveActiveAgents" class="live-active-agents"></div>
+      </div>
+
+      <!-- Tarina-alue -->
+      <main class="story-view-area">
+        
+        <!-- Uuden tarinan luonnin lataus-overlay -->
+        <div id="storyCreationOverlay" class="creation-overlay hidden">
+          <div class="creation-box">
+            <div class="creation-spinner"></div>
+            <h2 id="creationTitle" class="creation-headline">Luodaan tarinamaailmaa...</h2>
+            <p id="creationSubtext" class="creation-subtext">Ohjaaja luo asetelmaa, salaisia juonia ja alkuhahmoja.</p>
+            <div class="creation-details" id="creationDetails"></div>
+          </div>
         </div>
 
         <div id="storyScrollArea" class="story-content">
           <div id="emptyStoryNotice" class="empty-state">
             <div class="empty-icon">📖</div>
             <h3 data-i18n="emptyStoryTitle">Ei avointa tarinaa</h3>
-            <p data-i18n="emptyStoryDesc">Aloita luomalla uusi seikkailu tai valitse aiempi tarina yläpalkista.</p>
+            <p data-i18n="emptyStoryDesc">Aloita luomalla uusi seikkailu tai valitse aiempi tarina sivupalkista.</p>
             <button class="btn btn-primary" onclick="openNewStoryModal()" data-i18n="createFirstStoryBtn">Luo uusi tarina</button>
           </div>
           <!-- Generoidut proosakappaleet renderöityvät tähän -->
           <div id="proseStream" class="prose-stream hidden"></div>
+
+        <!-- Dynaamiset Valintanapit (Interactive Choices) -->
+        <div id="choicesContainer" class="choices-container hidden">
+          <div class="choices-title">Ehdotetut valinnat:</div>
+          <div id="choicesButtons" class="choices-buttons"></div>
+        </div>
         </div>
 
-        <!-- Alatoimintapalkki -->
+        <!-- Alatoimintapalkki: Roolikytkin + Syöttö -->
         <footer class="action-bar-container">
           <div id="loadingIndicator" class="loading-bar hidden">
             <div class="spinner"></div>
             <span id="loadingStatusText" data-i18n="loadingStatusDefault">Agentit simuloivat tapahtumia ja kirjoittavat proosaa...</span>
+          </div>
+
+          <!-- Roolikytkin suoraan syötteen yläpuolella -->
+          <div class="role-selector-bar">
+            <div class="mode-segmented-control">
+              <button id="modeReaderBtn" class="segment-btn active" onclick="setMode('novel')" title="Kertoja etenee itsenäisesti tärkeisiin päätöskohtiin">
+                <span class="segment-label" data-i18n="modeNovel">Romaani</span>
+              </button>
+              <button id="modePlayerBtn" class="segment-btn" onclick="setMode('roleplay')" title="Sinä päätät oman hahmosi tärkeät teot">
+                <span class="segment-label" data-i18n="modeRoleplay">Roolipeli</span>
+              </button>
+              <button id="modeDirectorBtn" class="segment-btn" onclick="setMode('simulation')" title="Kaikki läsnä olevat hahmot tekevät itsenäisen ratkaisun">
+                <span class="segment-label" data-i18n="modeSimulation">Simulaatio</span>
+              </button>
+            </div>
+            
+            <div id="playerContextBadge" class="player-context-badge hidden">
+              <span class="badge-label">Ohjaat hahmoa:</span>
+              <strong id="activePlayerCharName">Ei valittu</strong>
+            </div>
           </div>
 
           <div class="action-bar" id="actionBar">
@@ -84,367 +177,564 @@
             <div id="readerControls" class="control-group">
               <input type="text" id="readerInput" class="styled-input" data-i18n-placeholder="readerPlaceholder" placeholder="Valinnainen toive tai käänne (esim. 'Yllättävä koputus ovelle')...">
               <button id="advanceBtn" class="btn btn-primary btn-action" onclick="advanceStory()">
-                <span data-i18n="readerAdvanceBtn">📖 Jatka tarinaa</span>
+                <span data-i18n="readerAdvanceBtn">Jatka tarinaa</span>
               </button>
             </div>
 
             <!-- Pelaajatilan syöte -->
             <div id="playerControls" class="control-group hidden">
-              <div class="player-tag" id="playerTag" data-i18n="playerTagDefault">⚔️ Pelaajahahmo</div>
               <input type="text" id="playerInput" class="styled-input" data-i18n-placeholder="playerPlaceholder" placeholder="Mitä teet tai sanot? (esim. 'Nostan katseeni ja kysyn: Kuka olet?')">
-              <button id="playerActBtn" class="btn btn-accent btn-action" onclick="advanceStory()">
-                <span data-i18n="playerActBtn">⚔️ Toimi</span>
+              <button id="playerActBtn" class="btn btn-primary btn-action" onclick="advanceStory()">
+                <span data-i18n="playerActBtn">Toimi</span>
               </button>
             </div>
 
             <!-- Ohjaajatilan syöte -->
-            <div id="directorControls" class="control-group hidden">
-              <input type="text" id="directorInput" class="styled-input" data-i18n-placeholder="directorPlaceholder" placeholder="Ohjaajan salainen komento (esim. 'Hahmojen välille syntyy riita kadonneesta avaimesta')...">
-              <button id="directorActBtn" class="btn btn-primary btn-action" onclick="advanceStory()">
-                <span data-i18n="directorActBtn">🎭 Ohjaa & Jatka</span>
-              </button>
+          </div>
+          <div class="composer-options">
+            <details id="privateIntentionGroup" class="hidden">
+              <summary data-i18n="privateIntention">Yksityinen aikomus</summary>
+              <textarea id="privateIntention" class="styled-textarea" rows="3" maxlength="4000" aria-label="Pelaajahahmon yksityinen aikomus" placeholder="Mitä hahmosi tavoittelee tai jättää sanomatta?"></textarea>
+            </details>
+            <details>
+              <summary data-i18n="worldIntervention">Muuta maailmaa</summary>
+              <textarea id="worldIntervention" class="styled-textarea" rows="3" maxlength="6000" aria-label="Maailman muutos seuraavassa vuorossa" placeholder="Esimerkiksi: aseman sähköt katkeavat."></textarea>
+            </details>
+            <div id="autoControls" class="auto-controls">
+              <label><input type="checkbox" id="autoContinue"> <span data-i18n="autoContinue">Automaattijatko</span></label>
+              <input type="number" id="autoBudget" min="1" max="10" value="3" aria-label="Automaattisesti luotavien jatkojen määrä" title="Jatkojen määrä, enintään 10">
             </div>
+          </div>
+          <div class="turn-feedback">
+            <span id="turnNotice" role="status" aria-live="polite"></span>
+            <button id="retryTurnBtn" class="btn btn-secondary btn-sm hidden" onclick="retryPendingTurn()" data-i18n="retryTurn">Palauta yhteys</button>
+            <button id="cancelTurnBtn" class="btn btn-secondary btn-sm hidden" onclick="cancelPendingTurn()" data-i18n="cancelTurn">Keskeytä</button>
           </div>
         </footer>
-      </section>
+      </main>
+    </div>
 
-      <!-- Oikea tarkastelu- ja muistipaneeli (Inspector) -->
-      <aside class="inspector-panel" id="inspectorPanel">
-        <div class="inspector-tabs">
-          <button class="tab-btn active" onclick="switchInspectorTab('characters')" data-i18n="tabCharacters">🧠 Hahmojen mieli</button>
-          <button class="tab-btn" onclick="switchInspectorTab('lore')" data-i18n="tabLore">🗺️ Maailma</button>
-          <button class="tab-btn" onclick="switchInspectorTab('director')" data-i18n="tabDirector">🎬 Juoni & Ohjaaja</button>
+    <!-- Oikea tarkastelu- ja muistipaneeli (Inspector) -->
+    <aside class="inspector-panel" id="inspectorPanel">
+      <label class="reveal-control"><input type="checkbox" id="revealSecrets" onchange="document.body.dataset.secrets = this.checked; filterAndRenderCharacters(); if (!this.checked) switchInspectorTab('characters');"> <span data-i18n="revealSecrets">Näytä salaisuudet</span></label>
+      <div class="inspector-tabs">
+        <button class="tab-btn active" onclick="switchInspectorTab('characters')" data-i18n="tabCharacters">Hahmot</button>
+        <button class="tab-btn" onclick="switchInspectorTab('lore')" data-i18n="tabLore">Maailma</button>
+        <button class="tab-btn" onclick="switchInspectorTab('director')" data-i18n="tabDirector">Juoni &amp; Ohjaaja</button>
+      </div>
+
+      <!-- Hahmonäkymä (Haitarilista, Haku ja Suodattimet) -->
+      <div id="tabCharacters" class="tab-content active">
+        <div class="char-management-toolbar">
+          <button class="btn btn-secondary btn-xs" onclick="openImportCharModal()" data-i18n="importCharBtn">📥 Tuo hahmo</button>
+          <button id="exportCharBtn" class="btn btn-secondary btn-xs" onclick="openExportCharModal()" data-i18n="exportCharBtn">📤 Vie hahmo</button>
         </div>
 
-        <!-- Hahmonäkymä -->
-        <div id="tabCharacters" class="tab-content active">
-          <!-- Hahmonhallinnan työkalupalkki -->
-          <div class="char-management-toolbar">
-            <button class="btn btn-secondary btn-xs" onclick="openImportCharModal()" data-i18n="importCharBtn">📥 Tuo hahmo</button>
-            <button id="exportCharBtn" class="btn btn-secondary btn-xs" onclick="openExportCharModal()" data-i18n="exportCharBtn">📤 Vie hahmo</button>
-          </div>
-
-          <div class="character-selector-list" id="charList">
-            <!-- Hahmokortit renderöityvät tähän -->
-          </div>
-          <div id="charDetailView" class="char-detail-view hidden">
-            <h3 id="charDetailName" class="char-title">Hahmon Nimi</h3>
-            <div class="char-badge-row">
-              <span id="charAgeBadge" class="badge">Ikä: -</span>
-              <span id="charRoleBadge" class="badge badge-accent">NPC</span>
-            </div>
-            
-            <div class="state-box">
-              <div class="state-item">
-                <strong data-i18n="physicalStateLabel">❤️ Fyysinen vointi:</strong>
-                <p id="charPhysicalState">-</p>
-              </div>
-              <div class="state-item">
-                <strong data-i18n="mentalStateLabel">🧠 Henkinen tila & Tunteet:</strong>
-                <p id="charMentalState">-</p>
-              </div>
-              <div class="state-item">
-                <strong data-i18n="secretMotiveLabel">🎯 Salainen motiivi:</strong>
-                <p id="charSecretMotive" class="secret-text">-</p>
-              </div>
-            </div>
-
-            <div class="memory-stream-container">
-              <h4 data-i18n="memoryStreamTitle">💭 Yksityinen muistivirta</h4>
-              <ul id="charMemoryList" class="memory-list">
-                <li data-i18n="noMemoriesYet">Ei vielä muistikuvia.</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        <!-- Maailman lorenäkymä -->
-        <div id="tabLore" class="tab-content">
-          <div class="lore-container">
-            <h3 data-i18n="worldLoreHeading">🌍 Maailman yleistieto & Säännöt</h3>
-            <div id="worldLoreContent" class="lore-text">Ei maailmankuvausta saatavilla.</div>
-            
-            <h3 class="mt-4" data-i18n="chronicleHeading">📜 Tapahtumakronikka (Chronicle)</h3>
-            <div id="chronicleList" class="chronicle-list">
-              <p class="text-muted" data-i18n="noChronicleYet">Ei kronikkakirjauksia vielä.</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Ohjaajan juonisuunnitelma -->
-        <div id="tabDirector" class="tab-content">
-          <div class="director-container">
-            <h3 data-i18n="directorPlotHeading">🎭 Salainen juonisuunnitelma</h3>
-            <div id="directorPlotContent" class="secret-plot-box">Ei juonisuunnitelmaa.</div>
-
-            <h3 class="mt-4" data-i18n="directorNotesHeading">📝 Ohjaajan muistiinpanot</h3>
-            <div id="directorNotesContent" class="notes-box">Ei muistiinpanoja.</div>
-          </div>
-        </div>
-      </aside>
-    </main>
-
-    <!-- Uusi Tarina Modali -->
-    <div id="newStoryModal" class="modal-backdrop hidden">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h2 data-i18n="newStoryHeader">✨ Luo uusi tarina / roolipeli</h2>
-          <button class="modal-close" onclick="closeNewStoryModal()">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-group">
-            <label data-i18n="newStoryTitleLabel">Tarinan Otsikko *</label>
-            <input type="text" id="newTitle" class="styled-input" data-i18n-placeholder="newStoryTitlePlaceholder" placeholder="esim. Varjojen Laakso, Tähtiristelijä Orion, Murha Kartanossa">
-          </div>
-          <div class="form-group">
-            <label data-i18n="newStoryGenreLabel">Genre / Tyylilaji</label>
-            <input type="text" id="newGenre" class="styled-input" data-i18n-placeholder="newStoryGenrePlaceholder" placeholder="esim. Tumma Fantasia, Kyberpunk, Psykologinen Trilleri, Sci-Fi">
-          </div>
-          <div class="form-group">
-            <label data-i18n="newStoryIdeaLabel">Tarinan pohja-ajatus / Lähtötilanne</label>
-            <textarea id="newIdea" class="styled-textarea" rows="3" data-i18n-placeholder="newStoryIdeaPlaceholder" placeholder="Kuvaile lyhyesti mistä tarina alkaa ja minkälainen maailma on..."></textarea>
-          </div>
-          <div class="form-group">
-            <label data-i18n="newStoryPlotIdeaLabel">Salainen Juoni-idea (Valinnainen)</label>
-            <textarea id="newPlotIdea" class="styled-textarea" rows="2" data-i18n-placeholder="newStoryPlotIdeaPlaceholder" placeholder="Jos sinulla on mielessä tietty juonenkäänne tai salaisuus, jonka Pääagentti tietää hahmoilta salassa..."></textarea>
-          </div>
-
-          <div class="form-group">
-            <label data-i18n="newStoryRoleLabel">Roolisi tarinassa</label>
-            <select id="newUserRole" class="styled-select" onchange="togglePlayerFields(this.value)">
-              <option value="reader" data-i18n="newStoryRoleReaderOpt">📖 Lukija (Tekoäly luo ja ohjaa hahmoja, voit seurata ja ohjata tarinaa)</option>
-              <option value="player" data-i18n="newStoryRolePlayerOpt">⚔️ Pelaaja (Otat yhden hahmon ohjaukseesi)</option>
+        <!-- Hakupalkki ja lajittelu -->
+        <div class="char-filter-bar">
+          <input type="search" id="charSearchInput" class="styled-input styled-input-sm" placeholder="Etsi hahmoa nimellä..." oninput="filterAndRenderCharacters()">
+          <div class="char-filter-row">
+            <select id="charSortSelect" class="styled-select styled-select-sm" onchange="filterAndRenderCharacters()">
+              <option value="activity">Viimeksi aktiiviset</option>
+              <option value="name">Nimi (A-Ö)</option>
+              <option value="tier">Taso (Major ensin)</option>
             </select>
-          </div>
-
-          <div id="playerCharFields" class="player-char-fields hidden">
-            <div class="form-group">
-              <label data-i18n="playerCharNameLabel">Pelaajahahmosi Nimi</label>
-              <input type="text" id="newPlayerCharName" class="styled-input" data-i18n-placeholder="playerCharNamePlaceholder" placeholder="esim. Eerik">
-            </div>
-            <div class="form-group">
-              <label data-i18n="playerCharDetailsLabel">Pelaajahahmon taustat ja toiveet</label>
-              <input type="text" id="newPlayerCharDetails" class="styled-input" data-i18n-placeholder="playerCharDetailsPlaceholder" placeholder="esim. Entinen ritari, kantaa salattua sormusta, hiljainen luonne">
+            <div class="char-filter-pills">
+              <button class="filter-pill active" data-filter="active" onclick="setCharFilter('active')">Aktiiviset</button>
+              <button class="filter-pill" data-filter="all" onclick="setCharFilter('all')">Kaikki</button>
+              <button class="filter-pill" data-filter="archived" onclick="setCharFilter('archived')">Arkisto</button>
             </div>
           </div>
         </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeNewStoryModal()" data-i18n="cancelBtn">Peruuta</button>
-          <button class="btn btn-primary" onclick="submitNewStory()" data-i18n="createStorySubmitBtn">🚀 Luo maailma & Aloita</button>
+
+        <!-- Haitarilista (Accordion) -->
+        <div class="character-accordion" id="characterAccordion">
+          <!-- Hahmojen haitarikortit renderöityvät tähän -->
         </div>
       </div>
-    </div>
 
-    <!-- Hahmon Vienti Modali -->
-    <div id="exportCharModal" class="modal-backdrop hidden">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h2 data-i18n="exportCharHeader">📤 Vie hahmo (Storytime Character Card)</h2>
-          <button class="modal-close" onclick="closeExportCharModal()">✕</button>
-        </div>
-        <div class="modal-body">
-          <p class="modal-intro" data-i18n="exportCharDesc">Valitse mitä tietoja haluat sisällyttää vietävään hahmokorttiin:</p>
+      <!-- Maailman lorenäkymä & Lennosta muokkaus -->
+      <div id="tabLore" class="tab-content">
+        <div class="lore-container">
+          <div class="section-edit-header">
+            <div class="genre-tag-box">
+              <span class="genre-label">Genre:</span>
+              <span id="storyGenreText" class="genre-value">-</span>
+              <button class="btn-text-edit" onclick="editStoryGenre()" title="Muokkaa genreä">✎</button>
+            </div>
+            <button id="editLoreBtn" class="btn btn-secondary btn-xs" onclick="toggleLoreEdit()">✎ Muokkaa</button>
+          </div>
+
+          <h3 data-i18n="worldLoreHeading">Maailman yleistieto & Säännöt</h3>
+          <div id="worldLoreDisplay" class="lore-text">Ei maailmankuvausta saatavilla.</div>
+          <div id="worldLoreEditGroup" class="edit-group hidden">
+            <textarea id="worldLoreInput" class="styled-textarea" rows="8"></textarea>
+            <div class="edit-actions">
+              <button class="btn btn-secondary btn-xs" onclick="toggleLoreEdit(false)">Peruuta</button>
+              <button class="btn btn-primary btn-xs" onclick="saveLoreChanges()">Tallenna</button>
+            </div>
+          </div>
           
-          <div class="checkbox-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="exportCheckProfile" checked disabled>
-              <span data-i18n="exportIncludeProfile">Perustiedot & Persoona (Nimi, ikä, ulkonäkö, luonne, kuvaus)</span>
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="exportCheckState" checked>
-              <span data-i18n="exportIncludeState">Nykyinen tila & Salainen motiivi (Fyysinen & henkinen vointi, salainen tavoite)</span>
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="exportCheckMemories" checked>
-              <span data-i18n="exportIncludeMemories">Hahmon muistivirta (Tarinan aikana kertyneet muistijäljet)</span>
-            </label>
+          <h3 class="mt-4" data-i18n="chronicleHeading">Tapahtumakronikka</h3>
+          <div id="chronicleList" class="chronicle-list">
+            <p class="text-muted" data-i18n="noChronicleYet">Ei kronikkakirjauksia vielä.</p>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeExportCharModal()" data-i18n="cancelBtn">Peruuta</button>
-          <button class="btn btn-primary" onclick="executeExportCharacter()" data-i18n="downloadCharJsonBtn">💾 Lataa JSON-kortti</button>
         </div>
       </div>
-    </div>
 
-    <!-- Hahmon Tuonti Modali -->
-    <div id="importCharModal" class="modal-backdrop hidden">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h2 data-i18n="importCharHeader">📥 Tuo hahmo tarinaan</h2>
-          <button class="modal-close" onclick="closeImportCharModal()">✕</button>
-        </div>
-        <div class="modal-body">
-          <p class="modal-intro" data-i18n="importCharDesc">Tuo aiemmin viety hahmokortti tähän tarinaan:</p>
-          
-          <div class="form-group">
-            <label data-i18n="importFileLabel">Valitse JSON-tiedosto (.json):</label>
-            <input type="file" id="importFileInput" accept=".json" class="styled-file-input" onchange="handleImportFileSelect(event)">
+      <!-- Ohjaajan juonisuunnitelma & Lennosta muokkaus -->
+      <div id="tabDirector" class="tab-content">
+        <div class="director-container">
+          <div class="section-edit-header">
+            <h3 data-i18n="directorPlotHeading">Salainen juonisuunnitelma</h3>
+            <button id="editPlotBtn" class="btn btn-secondary btn-xs" onclick="togglePlotEdit()">✎ Muokkaa</button>
+          </div>
+          <div id="directorPlotDisplay" class="secret-plot-box">Ei juonisuunnitelmaa.</div>
+          <div id="directorPlotEditGroup" class="edit-group hidden">
+            <textarea id="directorPlotInput" class="styled-textarea" rows="8"></textarea>
+            <div class="edit-actions">
+              <button class="btn btn-secondary btn-xs" onclick="togglePlotEdit(false)">Peruuta</button>
+              <button class="btn btn-primary btn-xs" onclick="savePlotChanges()">Tallenna</button>
+            </div>
           </div>
 
-          <div class="form-group">
-            <label data-i18n="importPasteLabel">Tai liitä JSON suoraan tähän:</label>
-            <textarea id="importJsonText" class="styled-textarea" rows="4" placeholder='{"format": "storytime_character", ...}'></textarea>
+          <div class="section-edit-header mt-4">
+            <h3 data-i18n="directorNotesHeading">Ohjaajan muistiinpanot</h3>
+            <button id="editNotesBtn" class="btn btn-secondary btn-xs" onclick="toggleNotesEdit()">✎ Muokkaa</button>
           </div>
-
-          <div class="checkbox-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="importCheckState" checked>
-              <span data-i18n="importIncludeState">Tuo hahmon nykyinen tila & salainen motiivi</span>
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="importCheckMemories" checked>
-              <span data-i18n="importIncludeMemories">Tuo hahmon aiemmat muistit</span>
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="importCheckAsPlayer">
-              <span data-i18n="importAsPlayerCheckbox">Aseta tämä hahmo pelaajan ohjaamaksi (⚔️ Pelaaja)</span>
-            </label>
+          <div id="directorNotesDisplay" class="notes-box">Ei muistiinpanoja.</div>
+          <div id="directorNotesEditGroup" class="edit-group hidden">
+            <textarea id="directorNotesInput" class="styled-textarea" rows="8"></textarea>
+            <div class="edit-actions">
+              <button class="btn btn-secondary btn-xs" onclick="toggleNotesEdit(false)">Peruuta</button>
+              <button class="btn btn-primary btn-xs" onclick="saveNotesChanges()">Tallenna</button>
+            </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeImportCharModal()" data-i18n="cancelBtn">Peruuta</button>
-          <button class="btn btn-primary" onclick="executeImportCharacter()" data-i18n="executeImportBtn">📥 Tuo hahmo tarinaan</button>
         </div>
       </div>
-    </div>
-
-    <!-- Asetukset Modali -->
-    <div id="settingsModal" class="modal-backdrop hidden">
-      <div class="modal-card modal-lg">
-        <div class="modal-header">
-          <h2 data-i18n="settingsHeader">⚙️ Asetukset &amp; Rajapinnat</h2>
-          <button class="modal-close" onclick="closeSettingsModal()">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="profile-toolbar">
-            <div class="form-group profile-picker">
-              <label for="settingsProfileSelect">Tallennettu palveluntarjoajaprofiili</label>
-              <select id="settingsProfileSelect" class="styled-select" onchange="selectSettingsProfile(this.value)"></select>
-            </div>
-            <div class="profile-actions">
-              <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('xai')">+ Grok</button>
-              <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('azure')">+ Azure AI</button>
-              <button type="button" class="btn btn-danger btn-xs" onclick="deleteSettingsProfile()">Poista</button>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="settingProfileName">Profiilin nimi</label>
-            <input type="text" id="settingProfileName" class="styled-input" placeholder="esim. Oma Grok">
-          </div>
-
-          <div class="form-group">
-            <label for="settingProvider" data-i18n="settingProviderLabel">LLM Palveluntarjoaja</label>
-            <select id="settingProvider" class="styled-select" onchange="toggleProviderSettings(this.value)">
-              <option value="xai" data-i18n="settingProviderXai">xAI Grok</option>
-              <option value="azure" data-i18n="settingProviderAzure">Azure AI / Azure OpenAI</option>
-            </select>
-          </div>
-
-          <div id="groupXai" class="form-group">
-            <label for="settingXaiKey" data-i18n="settingXaiKeyLabel">xAI API-avain (Grok)</label>
-            <input type="password" id="settingXaiKey" class="styled-input" placeholder="xai-..." autocomplete="off">
-          </div>
-
-          <div id="groupAzure" class="form-group-container hidden">
-            <p class="azure-endpoint-help">
-              <strong>Azure AI Foundry v1:</strong> käytä koko osoitetta <code>https://&lt;resurssi&gt;.cognitiveservices.azure.com/openai/v1/</code>.
-              Tällöin mallikenttiin annetaan Azure AI:ssa luotujen mallien nimet (esim. <code>gpt-5.6-terra</code> ja <code>gpt-5.6-luna</code>), eikä deployment-nimeä tarvita.
-              <strong>Perinteinen Azure OpenAI:</strong> käytä resurssin juuriosoitetta <code>https://&lt;resurssi&gt;.openai.azure.com</code>, API-versiota ja deployment-nimeä.
-            </p>
-            <div class="form-group">
-              <label for="settingAzureEndpoint" data-i18n="settingAzureEndpointLabel">Azure OpenAI -päätepiste</label>
-              <input type="url" id="settingAzureEndpoint" class="styled-input" placeholder="https://oma-resurssi.cognitiveservices.azure.com/openai/v1/">
-            </div>
-            <div class="form-group">
-              <label for="settingAzureKey" data-i18n="settingAzureKeyLabel">Azure API-avain</label>
-              <input type="password" id="settingAzureKey" class="styled-input" autocomplete="off">
-            </div>
-            <div class="grid-2-col">
-              <div class="form-group">
-                <label for="settingAzureVersion" data-i18n="settingAzureVersionLabel">Azure API-versio</label>
-                <input type="text" id="settingAzureVersion" class="styled-input" placeholder="2024-10-21">
-              </div>
-              <div class="form-group">
-                <label for="settingAzureDeployment">Deployment-nimi (vain perinteinen Azure OpenAI)</label>
-                <input type="text" id="settingAzureDeployment" class="styled-input" placeholder="gpt-4o-production">
-              </div>
-            </div>
-          </div>
-
-          <hr class="modal-divider">
-
-          <!-- Kertojan / Pääagentin hienosäädöt -->
-          <div class="tuning-section">
-            <h3 class="tuning-title" data-i18n="directorSettingsSection">🎬 Kertojan / Pääagentin hienosäädöt (Director & Novelist)</h3>
-            <div class="grid-2-col">
-              <div class="form-group">
-                <label data-i18n="modelLabel">Malli</label>
-                <input type="text" id="settingDirectorModel" class="styled-input" placeholder="grok-2-latest / gpt-5.6-terra">
-              </div>
-              <div class="form-group">
-                <label data-i18n="maxTokensLabel">Maksimitokenit</label>
-                <input type="number" id="settingDirectorMaxTokens" class="styled-input" min="500" max="8000" step="100" placeholder="3500">
-              </div>
-              <div class="form-group">
-                <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
-                <input type="number" id="settingDirectorTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.85">
-                <small id="settingDirectorTempNote" class="setting-note hidden">Azure AI Foundry GPT-5 käyttää kiinteää arvoa 1.</small>
-              </div>
-              <div class="form-group">
-                <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
-                <select id="settingDirectorReasoning" class="styled-select">
-                  <option value="none" data-i18n="reasoningNone">Ei erillistä ajattelua (None)</option>
-                  <option value="low" data-i18n="reasoningLow">Matala (Low)</option>
-                  <option value="medium" selected data-i18n="reasoningMedium">Keskitaso (Medium)</option>
-                  <option value="high" data-i18n="reasoningHigh">Korkea / Syvä (High)</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <hr class="modal-divider">
-
-          <!-- Hahmoagenttien hienosäädöt -->
-          <div class="tuning-section">
-            <h3 class="tuning-title" data-i18n="characterSettingsSection">🧠 Hahmoagenttien hienosäädöt (Character Agents)</h3>
-            <div class="grid-2-col">
-              <div class="form-group">
-                <label data-i18n="modelLabel">Malli</label>
-                <input type="text" id="settingCharModel" class="styled-input" placeholder="grok-2-latest / gpt-5.6-luna">
-              </div>
-              <div class="form-group">
-                <label data-i18n="maxTokensLabel">Maksimitokenit</label>
-                <input type="number" id="settingCharMaxTokens" class="styled-input" min="200" max="2000" step="50" placeholder="600">
-              </div>
-              <div class="form-group">
-                <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
-                <input type="number" id="settingCharTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.75">
-                <small id="settingCharTempNote" class="setting-note hidden">Azure AI Foundry GPT-5 käyttää kiinteää arvoa 1.</small>
-              </div>
-              <div class="form-group">
-                <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
-                <select id="settingCharReasoning" class="styled-select">
-                  <option value="none" data-i18n="reasoningNone">Ei erillistä ajattelua (None)</option>
-                  <option value="low" selected data-i18n="reasoningLow">Matala (Low)</option>
-                  <option value="medium" data-i18n="reasoningMedium">Keskitaso (Medium)</option>
-                  <option value="high" data-i18n="reasoningHigh">Korkea / Syvä (High)</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeSettingsModal()" data-i18n="closeBtn">Sulje</button>
-          <button class="btn btn-primary" onclick="saveSettings()" data-i18n="saveSettingsBtn">Tallenna ja aktivoi profiili</button>
-        </div>
-      </div>
-    </div>
+    </aside>
 
   </div>
 
+  <!-- Uusi Tarina Modali -->
+  <div id="newStoryModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 data-i18n="newStoryHeader">Luo uusi tarina</h2>
+        <button class="modal-close" onclick="closeNewStoryModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label data-i18n="newStoryTitleLabel">Tarinan Otsikko *</label>
+          <input type="text" id="newTitle" class="styled-input" data-i18n-placeholder="newStoryTitlePlaceholder" placeholder="esim. Kipinä pimeydessä, Varjojen Laakso, Tähtiristeilijä">
+        </div>
+        <div class="form-group">
+          <label data-i18n="newStoryGenreLabel">Genre / Tyylilaji</label>
+          <input type="text" id="newGenre" class="styled-input" data-i18n-placeholder="newStoryGenrePlaceholder" placeholder="esim. Agatha Christie -murhamysteeri, Kyberpunk, Tumma Fantasia">
+        </div>
+        
+        <div class="form-group">
+          <label>Sävyprofiili</label>
+          <select id="newToneProfile" class="styled-select" onchange="updateNewStoryTonePreview()"></select>
+          <small id="newToneProfileDesc" class="setting-note">Sävyprofiilin kuvaus</small>
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="newStoryIdeaLabel">Tarinan pohja-ajatus / Lähtötilanne</label>
+          <textarea id="newIdea" class="styled-textarea" rows="3" data-i18n-placeholder="newStoryIdeaPlaceholder" placeholder="Kuvaile lähtötilanne, miljöö ja aloitustapahtuma..."></textarea>
+        </div>
+        <div class="form-group">
+          <label data-i18n="newStoryPlotIdeaLabel">Salainen Juoni-idea (Valinnainen)</label>
+          <textarea id="newPlotIdea" class="styled-textarea" rows="2" data-i18n-placeholder="newStoryPlotIdeaPlaceholder" placeholder="Salaiset motiivit tai käänteet, jotka vain Ohjaaja tietää..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label data-i18n="newStoryRoleLabel">Roolisi tarinassa</label>
+          <select id="newUserRole" class="styled-select" onchange="togglePlayerFields(this.value)">
+            <option value="novel" data-i18n="modeNovel">Romaani</option>
+            <option value="simulation" data-i18n="modeSimulation">Simulaatio</option>
+            <option value="roleplay" data-i18n="modeRoleplay">Roolipeli</option>
+          </select>
+        </div>
+
+        <div id="playerCharFields" class="player-char-fields hidden">
+          <div class="form-group">
+            <label data-i18n="playerCharNameLabel">Pelaajahahmosi Nimi</label>
+            <input type="text" id="newPlayerCharName" class="styled-input" data-i18n-placeholder="playerCharNamePlaceholder" placeholder="esim. Eerik">
+          </div>
+          <div class="form-group">
+            <label data-i18n="playerCharDetailsLabel">Pelaajahahmon taustat ja toiveet</label>
+            <input type="text" id="newPlayerCharDetails" class="styled-input" data-i18n-placeholder="playerCharDetailsPlaceholder" placeholder="esim. Salapoliisi, varovainen luonne, kantaa salattua sormusta">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeNewStoryModal()" data-i18n="cancelBtn">Peruuta</button>
+        <button class="btn btn-primary" onclick="startNewStory()" data-i18n="startStoryBtn">Luo ja aloita tarina</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hahmon muokkaus Modali (Lennosta muokkaus) -->
+  <div id="editCharModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2 id="editCharModalTitle">Muokkaa hahmoa</h2>
+        <button class="modal-close" onclick="closeEditCharModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editCharId">
+        <div class="grid-2-col">
+          <div class="form-group">
+            <label>Nimi</label>
+            <input type="text" id="editCharName" class="styled-input" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label>Ikä</label>
+            <input type="number" id="editCharAge" class="styled-input" autocomplete="off">
+          </div>
+        </div>
+        <div class="grid-2-col">
+          <div class="form-group">
+            <label>Sukupuoli</label>
+            <input type="text" id="editCharGender" class="styled-input" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label>Taso (Tier)</label>
+            <select id="editCharTier" class="styled-select">
+              <option value="major">Major (Päähahmo)</option>
+              <option value="supporting">Supporting (Sivuhahmo)</option>
+              <option value="minor">Minor (Taustahahmo)</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid-2-col">
+          <div class="form-group">
+            <label>Fyysinen tila</label>
+            <textarea id="editCharPhysicalState" class="styled-textarea" rows="4" autocomplete="off"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Henkinen tila</label>
+            <textarea id="editCharMentalState" class="styled-textarea" rows="4" autocomplete="off"></textarea>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Ulkonäkö & Varusteet</label>
+          <textarea id="editCharAppearance" class="styled-textarea" rows="4" autocomplete="off"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Persoona & Luonne</label>
+          <textarea id="editCharPersonality" class="styled-textarea" rows="4" autocomplete="off"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Salainen motiivi / Tavoite</label>
+          <textarea id="editCharSecretMotive" class="styled-textarea" rows="4" autocomplete="off"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Julkinen tausta / Maine</label>
+          <textarea id="editCharPublicBio" class="styled-textarea" rows="4" autocomplete="off"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Tila (Status)</label>
+          <select id="editCharStatus" class="styled-select">
+            <option value="active">Aktiivinen</option>
+            <option value="unconscious">Tajuton / Toimintakyvytön</option>
+            <option value="dead">Kuollut</option>
+            <option value="archived">Arkistoitu</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeEditCharModal()">Peruuta</button>
+        <button class="btn btn-primary" onclick="saveCharacterEdits()">Tallenna muutokset</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt & Sävyprofiilit Modali -->
+  <div id="promptEditorModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2>System Promptit &amp; Sävyprofiilit</h2>
+        <button class="modal-close" onclick="closePromptEditorModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-tabs">
+          <button id="promptTabProfilesBtn" class="tab-btn active" onclick="switchPromptTab('profiles')">Sävyprofiilit</button>
+          <button id="promptTabPromptsBtn" class="tab-btn" onclick="switchPromptTab('prompts')">System Promptit</button>
+        </div>
+
+        <!-- Sävyprofiilit -välilehti -->
+        <div id="promptTabProfiles" class="tab-pane active">
+          <div class="flex-row gap-2 mb-3">
+            <select id="toneProfileSelect" class="styled-select flex-1" onchange="loadToneProfileContent(this.value)"></select>
+            <button class="btn btn-secondary btn-sm" onclick="createNewToneProfilePrompt()">+ Uusi profiili</button>
+          </div>
+          <div class="form-group">
+            <textarea id="toneProfileEditor" class="styled-textarea code-font" rows="12"></textarea>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveActiveToneProfile()">Tallenna sävyprofiili</button>
+        </div>
+
+        <!-- System Promptit -välilehti -->
+        <div id="promptTabPrompts" class="tab-pane hidden">
+          <div class="mb-3">
+            <select id="promptSelect" class="styled-select w-100" onchange="loadSelectedPromptContent(this.value)"></select>
+          </div>
+          <div class="form-group">
+            <textarea id="promptEditor" class="styled-textarea code-font" rows="12"></textarea>
+          </div>
+          <div class="flex-row justify-between">
+            <button class="btn btn-danger btn-sm" onclick="resetSelectedPrompt()">Palauta oletus</button>
+            <button class="btn btn-primary btn-sm" onclick="saveSelectedPrompt()">Tallenna prompti</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closePromptEditorModal()">Sulje</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hahmon Vienti Modali -->
+  <div id="exportCharModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 data-i18n="exportCharHeader">Vie hahmo (Storytime Character Card)</h2>
+        <button class="modal-close" onclick="closeExportCharModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-intro" data-i18n="exportCharDesc">Valitse mitä tietoja haluat sisällyttää vietävään hahmokorttiin:</p>
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="exportCheckProfile" checked disabled>
+            <span data-i18n="exportIncludeProfile">Perustiedot & Persoona</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="exportCheckState" checked>
+            <span data-i18n="exportIncludeState">Nykyinen tila & Salainen motiivi</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="exportCheckMemories" checked>
+            <span data-i18n="exportIncludeMemories">Hahmon muistivirta</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeExportCharModal()" data-i18n="cancelBtn">Peruuta</button>
+        <button class="btn btn-primary" onclick="executeExportCharacter()" data-i18n="downloadCharJsonBtn">Lataa JSON-kortti</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hahmon Tuonti Modali -->
+  <div id="importCharModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 data-i18n="importCharHeader">Tuo hahmo tarinaan</h2>
+        <button class="modal-close" onclick="closeImportCharModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label data-i18n="importFileLabel">Valitse JSON-tiedosto (.json):</label>
+          <input type="file" id="importFileInput" accept=".json" class="styled-file-input" onchange="handleImportFileSelect(event)">
+        </div>
+        <div class="form-group">
+          <label data-i18n="importPasteLabel">Tai liitä JSON suoraan tähän:</label>
+          <textarea id="importJsonText" class="styled-textarea" rows="4" placeholder='{"format": "storytime_character", ...}'></textarea>
+        </div>
+        <div class="checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="importCheckState" checked>
+            <span data-i18n="importIncludeState">Tuo hahmon nykyinen tila & salainen motiivi</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="importCheckMemories" checked>
+            <span data-i18n="importIncludeMemories">Tuo hahmon aiemmat muistit</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="importCheckAsPlayer">
+            <span data-i18n="importAsPlayerCheckbox">Aseta tämä hahmo pelaajan ohjaamaksi</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeImportCharModal()" data-i18n="cancelBtn">Peruuta</button>
+        <button class="btn btn-primary" onclick="executeImportCharacter()" data-i18n="executeImportBtn">Tuo hahmo tarinaan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Asetukset Modali -->
+  <div id="settingsModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2 data-i18n="settingsHeader">Asetukset &amp; Rajapinnat</h2>
+        <button class="modal-close" onclick="closeSettingsModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="profile-toolbar">
+          <div class="form-group profile-picker">
+            <label for="settingsProfileSelect">Tallennettu palveluntarjoajaprofiili</label>
+            <select id="settingsProfileSelect" class="styled-select" onchange="selectSettingsProfile(this.value)"></select>
+          </div>
+          <div class="profile-actions">
+            <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('xai')">+ Grok</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('azure')">+ Azure AI</button>
+            <button type="button" class="btn btn-danger btn-xs" onclick="deleteSettingsProfile()">Poista</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="settingProfileName">Profiilin nimi</label>
+          <input type="text" id="settingProfileName" class="styled-input" placeholder="esim. Oma Grok">
+        </div>
+
+        <div class="form-group">
+          <label for="settingProvider" data-i18n="settingProviderLabel">LLM Palveluntarjoaja</label>
+          <select id="settingProvider" class="styled-select" onchange="toggleProviderSettings(this.value)">
+            <option value="xai" data-i18n="settingProviderXai">xAI Grok</option>
+            <option value="azure" data-i18n="settingProviderAzure">Azure AI / Azure OpenAI</option>
+          </select>
+        </div>
+
+        <div id="groupXai" class="form-group">
+          <label for="settingXaiKey" data-i18n="settingXaiKeyLabel">xAI API-avain (Grok)</label>
+          <input type="password" id="settingXaiKey" class="styled-input" placeholder="xai-..." autocomplete="new-password" data-lpignore="true" data-1p-ignore="true">
+        </div>
+
+        <div id="groupAzure" class="form-group-container hidden">
+          <div class="form-group">
+            <label for="settingAzureEndpoint" data-i18n="settingAzureEndpointLabel">Azure OpenAI -päätepiste</label>
+            <input type="url" id="settingAzureEndpoint" class="styled-input" placeholder="https://oma-resurssi.cognitiveservices.azure.com/openai/v1/" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="settingAzureKey" data-i18n="settingAzureKeyLabel">Azure API-avain</label>
+            <input type="password" id="settingAzureKey" class="styled-input" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true">
+          </div>
+          <div class="grid-2-col">
+            <div class="form-group">
+              <label for="settingAzureVersion" data-i18n="settingAzureVersionLabel">Azure API-versio</label>
+              <input type="text" id="settingAzureVersion" class="styled-input" placeholder="2024-10-21">
+            </div>
+            <div class="form-group">
+              <label for="settingAzureDeployment">Deployment-nimi (vain perinteinen Azure)</label>
+              <input type="text" id="settingAzureDeployment" class="styled-input" placeholder="gpt-4o-production">
+            </div>
+          </div>
+        </div>
+
+        <hr class="modal-divider">
+
+        <!-- Kertojan / Pääagentin hienosäädöt -->
+        <div class="tuning-section">
+          <h3 class="tuning-title" data-i18n="directorSettingsSection">Kertojan / Pääagentin hienosäädöt (Director & Novelist)</h3>
+          <div class="grid-2-col">
+            <div class="form-group">
+              <label data-i18n="modelLabel">Malli</label>
+              <input type="text" id="settingDirectorModel" class="styled-input" placeholder="grok-4.6 / gpt-4o">
+            </div>
+            <div class="form-group">
+              <label data-i18n="maxTokensLabel">Maksimitokenit</label>
+              <input type="number" id="settingDirectorMaxTokens" class="styled-input" min="500" max="64000" step="500" placeholder="35000">
+            </div>
+            <div class="form-group">
+              <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
+              <input type="number" id="settingDirectorTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.85">
+              <small id="settingDirectorTempNote" class="setting-note hidden">Azure AI Foundry GPT-5 käyttää kiinteää arvoa 1.</small>
+            </div>
+            <div class="form-group">
+              <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
+              <select id="settingDirectorReasoning" class="styled-select">
+                <option value="none" data-i18n="reasoningNone">Ei erillistä ajattelua (None)</option>
+                <option value="low" data-i18n="reasoningLow">Matala (Low)</option>
+                <option value="medium" selected data-i18n="reasoningMedium">Keskitaso (Medium)</option>
+                <option value="high" data-i18n="reasoningHigh">Korkea / Syvä (High)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <hr class="modal-divider">
+
+        <!-- Hahmoagenttien hienosäädöt -->
+        <div class="tuning-section">
+          <h3 class="tuning-title" data-i18n="characterSettingsSection">Hahmoagenttien hienosäädöt (Character Agents)</h3>
+          <div class="grid-2-col">
+            <div class="form-group">
+              <label data-i18n="modelLabel">Malli</label>
+              <input type="text" id="settingCharModel" class="styled-input" placeholder="grok-4.3 / gpt-4o">
+            </div>
+            <div class="form-group">
+              <label data-i18n="maxTokensLabel">Maksimitokenit</label>
+              <input type="number" id="settingCharMaxTokens" class="styled-input" min="200" max="8000" step="100" placeholder="1200">
+            </div>
+            <div class="form-group">
+              <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
+              <input type="number" id="settingCharTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.75">
+              <small id="settingCharTempNote" class="setting-note hidden">Azure AI Foundry GPT-5 käyttää kiinteää arvoa 1.</small>
+            </div>
+            <div class="form-group">
+              <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
+              <select id="settingCharReasoning" class="styled-select">
+                <option value="none" selected data-i18n="reasoningNone">Ei erillistä ajattelua (None - nopea &lt;1s)</option>
+                <option value="low" data-i18n="reasoningLow">Matala (Low)</option>
+                <option value="medium" data-i18n="reasoningMedium">Keskitaso (Medium)</option>
+                <option value="high" data-i18n="reasoningHigh">Korkea / Syvä (High)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeSettingsModal()" data-i18n="closeBtn">Sulje</button>
+        <button class="btn btn-primary" onclick="saveSettings()" data-i18n="saveSettingsBtn">Tallenna ja aktivoi profiili</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- API & Token Lokitiedot Modali -->
+  <div id="debugLogsModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2>⚡ API- &amp; Token-lokitiedot</h2>
+        <button class="modal-close" onclick="closeDebugLogsModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="debugStatsSummary" class="debug-stats-summary">
+          <!-- Dynaaminen yhteenveto -->
+        </div>
+        <div class="debug-table-wrapper">
+          <table class="debug-table">
+            <thead>
+              <tr>
+                <th>Aika</th>
+                <th>Rooli</th>
+                <th>Malli</th>
+                <th>Kesto</th>
+                <th>Prompt</th>
+                <th>Vastaus</th>
+                <th>Reasoning</th>
+                <th>Yhteensä</th>
+                <th>Hinta</th>
+                <th>Tila</th>
+              </tr>
+            </thead>
+            <tbody id="debugLogsTableBody">
+              <!-- Dynaamiset rivit -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="loadDebugLogs()">Päivitä tiedot</button>
+        <button class="btn btn-primary" onclick="closeDebugLogsModal()">Sulje</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
+  <script src="/static/turns.js"></script>
 </body>
 </html>

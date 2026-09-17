@@ -1,29 +1,138 @@
 import os
+import asyncio
+import json
+import logging
+from uuid import uuid4
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from dotenv import set_key
 from pydantic import BaseModel
 
 from config import settings
-from core.types import StoryInitRequest, AdvanceStoryRequest
+from core.types import StoryInitRequest, AdvanceStoryRequest, StoryMeta
+from core.llm_client import LLMClient
+from core.prompt_loader import prompt_loader
+from core.profile_store import KEY_FIELDS, load_profiles, save_profile_keys
 from engine.story_engine import StoryEngine
 import database.db as db
+from database import turn_store
 
-app = FastAPI(title="Tarinamoottori API", version="1.0.0")
+logger = logging.getLogger("tarinamoottori.api")
 
-# CORS tuki
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Tarinamoottori API", version="2.0.0")
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "test", "testserver"])
 
 engine = StoryEngine()
+jobs: dict[tuple[str, str], dict] = {}
+background_tasks: set[asyncio.Task] = set()
+
+
+def story_busy(story_id: str | None = None) -> bool:
+    return engine.is_busy(story_id) or any(job["status"] == "running" and (story_id is None or key[0] == story_id) for key, job in jobs.items())
+
+
+@app.middleware("http")
+async def local_request_boundary(request: Request, call_next):
+    origin = request.headers.get("origin")
+    if origin and (urlsplit(origin).scheme not in {"http", "https"} or urlsplit(origin).netloc != request.headers.get("host")):
+        return JSONResponse({"detail": "Ulkopuolinen alkuperä ei ole sallittu."}, status_code=403)
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        parts = request.url.path.strip("/").split("/")
+        if parts[:2] == ["api", "stories"] and len(parts) >= 3:
+            if "turn-jobs" not in parts and "advance" not in parts and story_busy(parts[2]):
+                return JSONResponse({"detail": "Odota vuoron valmistumista ennen tarinan muokkausta."}, status_code=409)
+        elif story_busy() and parts[:2] in (["api", "settings"], ["api", "prompts"], ["api", "tone-profiles"]):
+            return JSONResponse({"detail": "Odota generoinnin valmistumista ennen asetusten muokkausta."}, status_code=409)
+    return await call_next(request)
+
+
+@app.exception_handler(ValueError)
+async def invalid_request(request: Request, error: ValueError):
+    return JSONResponse({"detail": str(error)}, status_code=400)
+
+
+async def run_turn_job(story_id: str, req: AdvanceStoryRequest, job: dict):
+    try:
+        async for event in engine.advance_turn_streaming(
+            story_id, req.user_input, req.mode, req.custom_guidance,
+            req.private_intention, req.request_id
+        ):
+            if event["type"] == "phase":
+                job["message"] = event["message"]
+            elif event["type"] == "turn_complete":
+                job.update(status="completed", data=event["data"])
+    except asyncio.CancelledError:
+        receipt = await turn_store.get_receipt(story_id, req.request_id)
+        if receipt:
+            job.update(status="completed", data=receipt.model_dump())
+        else:
+            job.update(status="cancelled", message="Generointi keskeytettiin. Tarinaa ei muutettu.")
+    except Exception as error:
+        logger.exception("Vuorotyö epäonnistui")
+        job.update(status="failed", message=str(error))
+
+
+@app.post("/api/stories/{story_id}/turn-jobs")
+async def start_turn_job(story_id: str, req: AdvanceStoryRequest):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    req.request_id = req.request_id or uuid4().hex
+    key = (story_id, req.request_id)
+    payload = req.model_dump()
+    if key in jobs:
+        if jobs[key]["payload"] != payload:
+            raise HTTPException(409, "Pyyntötunniste on jo käytössä eri sisällöllä.")
+    else:
+        if story_busy(story_id):
+            raise HTTPException(409, "Tarinan vuoro on jo kesken.")
+        if len(jobs) > 200:
+            for old_key in list(jobs):
+                if jobs[old_key]["status"] != "running":
+                    del jobs[old_key]
+        job = {"status": "running", "message": "Valmistellaan vuoroa...", "payload": payload}
+        jobs[key] = job
+        task = asyncio.create_task(run_turn_job(story_id, req, job))
+        job["task"] = task
+        background_tasks.add(task)
+        def finish_task(completed):
+            background_tasks.discard(completed)
+            if completed.cancelled() and job["status"] == "running":
+                job.update(status="cancelled", message="Generointi keskeytettiin. Tarinaa ei muutettu.")
+        task.add_done_callback(finish_task)
+    return {"request_id": req.request_id, "status": jobs[key]["status"]}
+
+
+@app.get("/api/stories/{story_id}/turn-jobs/{request_id}")
+async def get_turn_job(story_id: str, request_id: str):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    job = jobs.get((story_id, request_id))
+    if job:
+        return {key: value for key, value in job.items() if key not in {"payload", "task"}}
+    receipt = await turn_store.get_receipt(story_id, request_id)
+    if receipt:
+        return {"status": "completed", "data": receipt.model_dump()}
+    raise HTTPException(404, "Työtä ei löydy. Palvelin on voinut käynnistyä uudelleen.")
+
+
+@app.delete("/api/stories/{story_id}/turn-jobs/{request_id}")
+async def cancel_turn_job(story_id: str, request_id: str):
+    job = jobs.get((story_id, request_id))
+    if not job:
+        if not await db.get_story_meta(story_id):
+            raise HTTPException(404, "Tarinaa ei löydy.")
+        receipt = await turn_store.get_receipt(story_id, request_id)
+        jobs[(story_id, request_id)] = ({"status": "completed", "data": receipt.model_dump(), "payload": {}}
+            if receipt else {"status": "cancelled", "message": "Generointi keskeytettiin. Tarinaa ei muutettu.", "payload": {}})
+    if job and job["status"] == "running":
+        job["task"].cancel()
+    return {"status": "cancellation_requested"}
 
 # --- Tarinaprojektien reitit ---
 
@@ -37,9 +146,12 @@ async def list_stories():
 async def create_story(req: StoryInitRequest):
     """Luo uuden tarinaprojektin ja generoi aloituksen."""
     try:
+        logger.info(f"Aloitetaan uuden tarinan luonti: '{req.title}', genre: '{req.genre}'...")
         result = await engine.initialize_new_story(req)
+        logger.info(f"Uusi tarina luotu onnistuneesti: {result.get('story_id')}")
         return {"status": "success", "data": result}
     except Exception as e:
+        logger.exception(f"Virhe uuden tarinan luonnissa: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/stories/{story_id}")
@@ -54,8 +166,7 @@ async def get_story_details(story_id: str):
     turns = await db.get_all_story_turns(story_id)
     chronicle = await db.get_chronicle(story_id)
 
-    # Luetaan story.txt jos olemassa
-    txt_path = settings.STORIES_DIR / story_id / "story.txt"
+    txt_path = db.get_story_dir(story_id) / "story.txt"
     full_text = txt_path.read_text(encoding="utf-8") if txt_path.exists() else ""
 
     return {
@@ -64,8 +175,87 @@ async def get_story_details(story_id: str):
         "active_scene": active_scene,
         "turns": turns,
         "chronicle": chronicle,
+        "runtime": await turn_store.get_runtime(story_id),
         "full_text": full_text
     }
+
+@app.delete("/api/stories/{story_id}")
+async def delete_story_endpoint(story_id: str):
+    """Poistaa tarinaprojektin ja sen tiedostot."""
+    logger.info(f"Poistetaan tarina: '{story_id}'...")
+    success = await db.delete_story(story_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Tarinaa ei löydy.")
+    return {"status": "success", "message": f"Tarina '{story_id}' poistettu."}
+
+class StoryMetaUpdate(BaseModel):
+    title: Optional[str] = None
+    genre: Optional[str] = None
+    world_lore: Optional[str] = None
+    director_plot_arc: Optional[str] = None
+    director_notes: Optional[str] = None
+    tone_profile: Optional[str] = None
+    custom_tone_override: Optional[str] = None
+    theme_color: Optional[str] = None
+
+@app.post("/api/stories/{story_id}/meta")
+async def update_story_meta(story_id: str, req: StoryMetaUpdate):
+    """Päivittää tarinan metatiedot ja sävyprofiilin."""
+    meta = await db.get_story_meta(story_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Tarinaa ei löydy.")
+
+    if req.title is not None:
+        meta.title = req.title
+    if req.genre is not None:
+        meta.genre = req.genre
+    if req.world_lore is not None:
+        meta.world_lore = req.world_lore
+    if req.director_plot_arc is not None:
+        meta.director_plot_arc = req.director_plot_arc
+    if req.director_notes is not None:
+        meta.director_notes = req.director_notes
+    if req.tone_profile is not None:
+        meta.tone_profile = req.tone_profile
+    if req.custom_tone_override is not None:
+        meta.custom_tone_override = req.custom_tone_override
+    if req.theme_color is not None:
+        meta.theme_color = req.theme_color
+
+    await db.save_story_meta(story_id, meta)
+    return {"status": "success", "meta": meta}
+
+class CharacterUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    appearance: Optional[str] = None
+    personality: Optional[str] = None
+    physical_state: Optional[str] = None
+    mental_state: Optional[str] = None
+    secret_motive: Optional[str] = None
+    public_bio: Optional[str] = None
+    status: Optional[str] = None
+    tier: Optional[str] = None
+
+@app.post("/api/stories/{story_id}/characters/{char_id}/update")
+async def update_character(story_id: str, char_id: str, req: CharacterUpdateRequest):
+    """Päivittää hahmon tietoja lennosta."""
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    char = await db.update_character_details(story_id, char_id, updates)
+    if not char:
+        raise HTTPException(status_code=404, detail="Hahmoa ei löydy.")
+    all_chars = await db.get_all_characters(story_id)
+    return {"status": "success", "character": char, "all_characters": all_chars}
+
+@app.post("/api/stories/{story_id}/characters/{char_id}/set_player")
+async def set_player_character_endpoint(story_id: str, char_id: str):
+    """Asettaa valitun hahmon pelaajan ohjaamaksi."""
+    char = await db.set_player_character(story_id, char_id)
+    if not char:
+        raise HTTPException(status_code=404, detail="Hahmoa ei löydy.")
+    all_chars = await db.get_all_characters(story_id)
+    return {"status": "success", "character": char, "all_characters": all_chars}
 
 @app.get("/api/stories/{story_id}/characters")
 async def get_characters(story_id: str):
@@ -73,7 +263,7 @@ async def get_characters(story_id: str):
     characters = await db.get_all_characters(story_id)
     result = []
     for c in characters:
-        memories = await db.get_character_memories(story_id, c.id, limit=15)
+        memories = await db.get_character_memories(story_id, c.id, limit=20)
         result.append({
             "character": c,
             "memories": memories
@@ -105,7 +295,7 @@ async def export_character(
         ]
 
     export_card = {
-        "version": "1.0",
+        "version": "2.0",
         "format": "storytime_character",
         "exported_from_story": story_id,
         "character": {
@@ -116,6 +306,7 @@ async def export_character(
             "appearance": char.appearance,
             "personality": char.personality,
             "public_bio": char.public_bio,
+            "tier": char.tier,
             "is_player_controlled": char.is_player_controlled
         }
     }
@@ -124,7 +315,8 @@ async def export_character(
         export_card["state"] = {
             "physical_state": char.physical_state,
             "mental_state": char.mental_state,
-            "secret_motive": char.secret_motive
+            "secret_motive": char.secret_motive,
+            "status": char.status
         }
 
     if include_memories:
@@ -163,28 +355,136 @@ async def import_character(story_id: str, req: CharacterImportRequest):
 
 @app.post("/api/stories/{story_id}/advance")
 async def advance_story(story_id: str, req: AdvanceStoryRequest):
-    """Edistää tarinaa yhden vuoron verran."""
+    """Edistää tarinaa yhden vuoron verran (REST)."""
     meta = await db.get_story_meta(story_id)
     if not meta:
         raise HTTPException(status_code=404, detail="Tarinaa ei löydy.")
 
     try:
+        logger.info(f"Edistetään tarinaa '{story_id}' (mode={req.mode})...")
         turn_response = await engine.advance_turn(
             story_id=story_id,
             user_input=req.user_input,
             mode=req.mode,
-            director_guidance=req.user_input if req.mode == "director" else None
+            director_guidance=req.custom_guidance or (req.user_input if req.mode == "director" else None),
+            private_intention=req.private_intention,
+            request_id=req.request_id
         )
+        logger.info(f"Tarinaa '{story_id}' edistetty: vuoro {turn_response.turn_index}")
         return {"status": "success", "data": turn_response}
     except Exception as e:
+        logger.exception(f"Virhe tarinan '{story_id}' vuoron edistämisessä: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- WebSocket Reaaliaikaiseen Striimaukseen ---
+
+@app.websocket("/ws/stories/{story_id}/live")
+async def websocket_story_live(websocket: WebSocket, story_id: str):
+    """WebSocket-päätepiste: striimaa agenttien työvaiheet ja proosan reaaliajassa."""
+    origin = websocket.headers.get("origin")
+    if origin and urlsplit(origin).netloc != websocket.headers.get("host"):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    try:
+        while True:
+            raw_msg = await websocket.receive_text()
+            data = AdvanceStoryRequest.model_validate_json(raw_msg).model_dump()
+            
+            user_input = data.get("user_input")
+            mode = data.get("mode", "reader")
+            custom_guidance = data.get("custom_guidance")
+
+            async for event in engine.advance_turn_streaming(
+                story_id=story_id,
+                user_input=user_input,
+                mode=mode,
+                director_guidance=custom_guidance or (user_input if mode == "director" else None),
+                private_intention=data.get("private_intention"),
+                request_id=data.get("request_id")
+            ):
+                await websocket.send_json(event)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+
+# --- System Promptien & Sävyprofiilien Hallinta ---
+
+@app.get("/api/tone-profiles")
+async def get_tone_profiles():
+    """Listaa kaikki saatavilla olevat sävyprofiilit."""
+    profiles = prompt_loader.list_tone_profiles()
+    return {"profiles": profiles}
+
+class ToneProfileSaveRequest(BaseModel):
+    id: str
+    title: str
+    content: str
+
+@app.post("/api/tone-profiles")
+async def save_tone_profile(req: ToneProfileSaveRequest):
+    """Luo tai tallentaa muokatun sävyprofiilin."""
+    safe_id = "".join([c if c.isalnum() else "_" for c in req.id]).strip("_").lower()
+    if not safe_id:
+        raise HTTPException(status_code=400, detail="Virheellinen profiilitunniste.")
+    
+    prompt_loader.save_custom_prompt(f"tone_profiles/{safe_id}.txt", req.content)
+    return {"status": "success", "id": safe_id}
+
+@app.get("/api/prompts")
+async def list_prompts():
+    """Listaa muokattavat system promptit."""
+    prompts = [
+        {"id": "safety_directive", "title": "Turvallisuusdirektiivi (Safety)", "path": "safety_directive.txt"},
+        {"id": "language_directive", "title": "Kielidirektiivi (Language)", "path": "language_directive.txt"},
+        {"id": "director_initialize", "title": "Ohjaaja: Tarinan alustus", "path": "director/initialize_story.txt"},
+        {"id": "director_perceptual", "title": "Ohjaaja: Aistisuodatin", "path": "director/perceptual_filter.txt"},
+        {"id": "director_prose", "title": "Ohjaaja: Proosasynteesi / Kertoja", "path": "director/synthesize_prose.txt"},
+        {"id": "director_watchdog", "title": "Ohjaaja: Valvoja (Watchdog)", "path": "director/watchdog_reflection.txt"},
+        {"id": "character_action", "title": "Hahmoagentti: Päätöksenteko", "path": "character/decide_action.txt"},
+        {"id": "chronicle_summarize", "title": "Kronikoitsija: Tapahtumatiivistys", "path": "chronicle/summarize.txt"},
+    ]
+    return {"prompts": prompts}
+
+@app.get("/api/prompts/content")
+async def get_prompt_content(path: str = Query(..., description="Promptin suhteellinen polku")):
+    """Hakee tietyn promptin nykyisen sisällön."""
+    content = prompt_loader.get_raw_prompt(path)
+    return {"path": path, "content": content}
+
+class PromptSaveRequest(BaseModel):
+    path: str
+    content: str
+
+@app.post("/api/prompts/save")
+async def save_prompt(req: PromptSaveRequest):
+    """Tallentaa käyttäjän muokkaaman promptin."""
+    prompt_loader.save_custom_prompt(req.path, req.content)
+    return {"status": "success", "message": "Prompti tallennettu."}
+
+class PromptResetRequest(BaseModel):
+    path: str
+
+@app.post("/api/prompts/reset")
+async def reset_prompt(req: PromptResetRequest):
+    """Palauttaa muokatun promptin järjestelmän oletukseen."""
+    success = prompt_loader.reset_custom_prompt(req.path)
+    return {"status": "success", "reset": success}
 
 # --- Vienti ja Tiedostot ---
 
 @app.get("/api/stories/{story_id}/export/txt")
 async def export_txt(story_id: str):
     """Lataa story.txt tiedoston."""
-    txt_path = settings.STORIES_DIR / story_id / "story.txt"
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    await turn_store.rebuild_exports(story_id)
+    txt_path = db.get_story_dir(story_id) / "story.txt"
     if not txt_path.exists():
         raise HTTPException(status_code=404, detail="Tiedostoa ei löydy.")
     return FileResponse(
@@ -196,7 +496,10 @@ async def export_txt(story_id: str):
 @app.get("/api/stories/{story_id}/export/md")
 async def export_md(story_id: str):
     """Lataa story.md tiedoston."""
-    md_path = settings.STORIES_DIR / story_id / "story.md"
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    await turn_store.rebuild_exports(story_id)
+    md_path = db.get_story_dir(story_id) / "story.md"
     if not md_path.exists():
         raise HTTPException(status_code=404, detail="Tiedostoa ei löydy.")
     return FileResponse(
@@ -208,6 +511,7 @@ async def export_md(story_id: str):
 # --- Asetukset ja LLM-hallinta ---
 
 class SettingsUpdate(BaseModel):
+    profile_id: Optional[str] = None
     llm_provider: Optional[str] = None
     xai_api_key: Optional[str] = None
     azure_openai_endpoint: Optional[str] = None
@@ -250,23 +554,38 @@ async def get_settings():
         "character_reasoning_effort": settings.CHARACTER_REASONING_EFFORT
     }
 
+class ProfileKeyTransfer(BaseModel):
+    profiles: List[Dict[str, Any]]
+
+
+@app.post("/api/settings/profile-secrets")
+async def migrate_profile_keys(req: ProfileKeyTransfer):
+    save_profile_keys(req.profiles)
+    return {"status": "success"}
+
+
 @app.post("/api/settings")
 async def update_settings(req: SettingsUpdate):
+    if req.profile_id:
+        save_profile_keys([{"id": req.profile_id, **req.model_dump(exclude_none=True)}])
+        for name, value in load_profiles().get(req.profile_id, {}).items():
+            if name in KEY_FIELDS and not getattr(req, name):
+                setattr(req, name, value)
     if req.llm_provider:
         settings.LLM_PROVIDER = req.llm_provider
-    if req.xai_api_key is not None:
+    if req.xai_api_key:
         settings.XAI_API_KEY = req.xai_api_key
     if req.azure_openai_endpoint is not None:
         settings.AZURE_OPENAI_ENDPOINT = req.azure_openai_endpoint
-    if req.azure_openai_api_key is not None:
+    if req.azure_openai_api_key:
         settings.AZURE_OPENAI_API_KEY = req.azure_openai_api_key
     if req.azure_openai_api_version is not None:
         settings.AZURE_OPENAI_API_VERSION = req.azure_openai_api_version
     if req.azure_deployment_name is not None:
         settings.AZURE_DEPLOYMENT_NAME = req.azure_deployment_name
-    if req.openai_api_key is not None:
+    if req.openai_api_key:
         settings.OPENAI_API_KEY = req.openai_api_key
-    if req.openrouter_api_key is not None:
+    if req.openrouter_api_key:
         settings.OPENROUTER_API_KEY = req.openrouter_api_key
         
     if req.director_model:
@@ -288,9 +607,29 @@ async def update_settings(req: SettingsUpdate):
         settings.CHARACTER_REASONING_EFFORT = req.character_reasoning_effort
 
     # Uudelleenalustetaan enginen LLM-asiakas
-    engine.llm = engine.director.llm = engine.chronicle.llm = engine.director.llm.__class__()
+    for name, value in req.model_dump(exclude_none=True).items():
+        if name == "profile_id":
+            continue
+        if name.endswith("api_key") and not value:
+            continue
+        set_key(str(settings.BASE_DIR / ".env"), name.upper(), str(value))
+    engine.llm = LLMClient()
+    engine.director.llm = engine.llm
+    engine.chronicle.llm = engine.llm
 
     return {"status": "success", "message": "Asetukset päivitetty."}
+
+@app.get("/api/stories/{story_id}/logs")
+async def get_story_logs(story_id: str, limit: int = 60):
+    """Hakee tarinan rajapintalokit ja suoritustiedot."""
+    logs = await db.get_api_calls_for_story(story_id, limit=limit)
+    return {"status": "success", "logs": logs}
+
+@app.get("/api/stories/{story_id}/stats")
+async def get_story_stats(story_id: str):
+    """Hakee yhteenvedon tarinan API-käytöstä (tokenit, kesto, hinta)."""
+    stats = await db.get_story_api_stats(story_id)
+    return {"status": "success", "stats": stats}
 
 # --- Staattiset tiedostot ja Web UI ---
 

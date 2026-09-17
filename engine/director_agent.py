@@ -1,15 +1,17 @@
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, AsyncIterator
+from config import settings
 from core.llm_client import LLMClient
 from core.types import StoryMeta, Character, Scene, SceneTurn, ChronicleEntry
-from core.safety import UNIVERSAL_SAFETY_DIRECTIVE
+from core.schemas import StoryInitResponse, ProseTurnResponse, pydantic_to_json_schema
+from core.prompt_loader import prompt_loader
 import database.db as db
 
 class DirectorAgent:
     """Pääagentti (Ohjaaja / Kirjailija / Pelinjohtaja).
     
     Vastaa maailman luomisesta, juonikaaresta, aistisuodatuksesta,
-    vuorojen koordinoinnista ja rikkaan kirjamaisen proosan kirjoittamisesta.
+    vuorojen koordinoinnista, proosan kirjoittamisesta ja valvojareflektiosta.
     """
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
@@ -23,72 +25,56 @@ class DirectorAgent:
         user_idea: str = "",
         player_char_name: Optional[str] = None,
         player_char_details: Optional[str] = None,
-        custom_plot_idea: Optional[str] = None
+        custom_plot_idea: Optional[str] = None,
+        tone_profile: str = "default",
+        custom_tone_override: Optional[str] = None
     ) -> Dict[str, Any]:
         """Luo uuden tarinamaailman, salaisen juonisuunnitelman, alkuhahmot ja aloituskappaleen."""
         
-        system_prompt = f"""
-{UNIVERSAL_SAFETY_DIRECTIVE}
-
-Olet mestarillinen kirjailija ja roolipeliohjaaja (Game Master & Novelist).
-Tehtäväsi on luoda uuden tarinan perusasetelma käyttäjän toiveiden pohjalta.
-Luot syvällisen, kiehtovan ja elävän maailman, jännittävän salaisen juonikaaren sekä 2-3 moniulotteista hahmoa.
-
-[OHJEET VASTAUKSELLE]
-Palauta VAIN JSON-muotoinen vastaus seuraavalla rakenteella:
-{{
-  "world_lore": "Rikas ja tunnelmallinen kuvaus maailmasta, sen historiasta, kulttuurista, säännöistä ja ilmapiiristä (2-4 kappaletta).",
-  "director_plot_arc": "Pääagentin salainen juonisuunnitelma: Pääkonflikti, salaisuudet, suunnitellut käänteet ja pitkän aikavälin päämäärä.",
-  "director_notes": "Pääagentin muistiinpanot tarinan teemoista ja tunnelmasta.",
-  "initial_characters": [
-    {{
-      "id": "uniikki_lyhyt_tunniste",
-      "name": "Hahmon Nimi",
-      "age": 28,
-      "gender": "Mies / Nainen / Muu",
-      "appearance": "Yksityiskohtainen ja elävä ulkonäkökuvaus.",
-      "personality": "Syvällinen persoonallisuus, arvot, luonteenpiirteet ja heikkoudet.",
-      "secret_motive": "Salainen henkilökohtainen tavoite tai trauma.",
-      "public_bio": "Mitä hahmosta yleisesti tiedetään.",
-      "physical_state": "Terve ja hyväkuntoinen",
-      "mental_state": "Valpas ja utelias",
-      "is_player_controlled": false
-    }}
-  ],
-  "initial_scene": {{
-    "location": "Aloituskohtauksen tarkka sijainti ja miljöökuvaus.",
-    "scene_goal": "Mitä aloituskohtauksessa on tarkoitus tapahtua / aloitustilanteen jännite.",
-    "opening_prose": "Mestarillinen, kaunokirjallinen aloitusproosakappale (kirjamainen, mukaansatempaava suomenkielinen kerronta, 2-4 kappaletta)."
-  }}
-}}
-"""
+        system_prompt = prompt_loader.compose_system_prompt(
+            prompt_name="director/initialize_story",
+            tone_profile=tone_profile,
+            custom_tone_override=custom_tone_override
+        )
 
         user_content = f"""
-TARINAN OTSIKKO: {title}
-GENRE / TYYLILAJI: {genre}
-KÄYTTÄJÄN TOIVE / POHJA-AJATUS: {user_idea or 'Keksi omaperäinen ja koukuttava aloitus asetelmalle.'}
+STORY TITLE: {title}
+GENRE: {genre}
+PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative premise.'}
 """
         if custom_plot_idea:
-            user_content += f"\nKÄYTTÄJÄN JUONI-IDEA: {custom_plot_idea}\n"
+            user_content += f"\nDIRECTOR PLOT INTENT: {custom_plot_idea}\n"
 
         if player_char_name:
-            user_content += f"\nPELAAJAN HAHMO: Nimi '{player_char_name}', lisätiedot: '{player_char_details or 'Ei tarkempia toiveita'}'. Merkitse tämä hahmo 'is_player_controlled': true."
+            user_content += f"\nPLAYER CHARACTER: Name '{player_char_name}', details: '{player_char_details or 'None specified'}'. Mark this character with 'is_player_controlled': true."
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
         ]
 
-        data = await self.llm.json_completion(messages=messages, role="director")
+        init_schema = pydantic_to_json_schema(StoryInitResponse, "story_initialization")
+        init_max_tokens = max(getattr(settings, "DIRECTOR_MAX_TOKENS", 8000), 8000)
+        data = await self.llm.json_completion(
+            messages=messages,
+            role="director",
+            max_tokens=init_max_tokens,
+            timeout=240.0,
+            json_schema=init_schema,
+            story_id=story_id
+        )
 
         # 1. Tallennetaan StoryMeta tietokantaan
+        data = StoryInitResponse.model_validate(data).model_dump()
         meta = StoryMeta(
             id=story_id,
             title=title,
             genre=genre,
             world_lore=data.get("world_lore", ""),
             director_plot_arc=data.get("director_plot_arc", ""),
-            director_notes=data.get("director_notes", "")
+            director_notes=data.get("director_notes", ""),
+            tone_profile=tone_profile,
+            custom_tone_override=custom_tone_override or ""
         )
         await db.save_story_meta(story_id, meta)
 
@@ -97,7 +83,10 @@ KÄYTTÄJÄN TOIVE / POHJA-AJATUS: {user_idea or 'Keksi omaperäinen ja koukutta
         char_ids = []
         for char_data in data.get("initial_characters", []):
             char_id = char_data.get("id") or char_data.get("name", "char").lower().replace(" ", "_")
-            # Varmistetaan että pelaajan valinta ohjaa lippua
+            if len(char_id) > 80 or not all(character.isalnum() or character in "_-" for character in char_id):
+                raise ValueError("Alustuksessa syntyi virheellinen hahmotunniste.")
+            if not char_id or char_id in char_ids:
+                raise ValueError("Alustuksessa syntyi päällekkäinen hahmotunniste.")
             is_player = char_data.get("is_player_controlled", False)
             if player_char_name and player_char_name.lower() in char_data.get("name", "").lower():
                 is_player = True
@@ -110,10 +99,12 @@ KÄYTTÄJÄN TOIVE / POHJA-AJATUS: {user_idea or 'Keksi omaperäinen ja koukutta
                 appearance=char_data.get("appearance", ""),
                 personality=char_data.get("personality", ""),
                 is_player_controlled=is_player,
-                physical_state=char_data.get("physical_state", "Terve"),
-                mental_state=char_data.get("mental_state", "Rauhallinen"),
+                physical_state=char_data.get("physical_state", "Terve ja hyväkuntoinen"),
+                mental_state=char_data.get("mental_state", "Rauhallinen ja tarkkaavainen"),
                 secret_motive=char_data.get("secret_motive", ""),
-                public_bio=char_data.get("public_bio", "")
+                public_bio=char_data.get("public_bio", ""),
+                tier=char_data.get("tier", "major"),
+                known_locations=char_data.get("known_locations", [])
             )
             await db.save_character(story_id, char)
             characters.append(char)
@@ -129,6 +120,7 @@ KÄYTTÄJÄN TOIVE / POHJA-AJATUS: {user_idea or 'Keksi omaperäinen ja koukutta
             is_active=True
         )
         scene_id = await db.create_scene(story_id, scene)
+        scene.id = scene_id
 
         # 4. Tallennetaan aloitustarinavuoro
         opening_prose = init_scene.get("opening_prose", f"{title} alkaa...")
@@ -140,6 +132,11 @@ KÄYTTÄJÄN TOIVE / POHJA-AJATUS: {user_idea or 'Keksi omaperäinen ja koukutta
             internal_monologue="",
             character_action="",
             director_prose=opening_prose,
+            choices=[
+                "Tutki ympäristöä tarkemmin",
+                "Keskustele läsnäolijoiden kanssa",
+                "Ryhdy suoraan toimintaan"
+            ],
             image_prompt=f"Cinematic atmospheric opening scene for {genre}, {init_scene.get('location', '')}, dramatic lighting, highly detailed novel illustration"
         )
         await db.add_scene_turn(story_id, first_turn)
@@ -149,7 +146,9 @@ KÄYTTÄJÄN TOIVE / POHJA-AJATUS: {user_idea or 'Keksi omaperäinen ja koukutta
             "characters": characters,
             "scene": scene,
             "opening_prose": opening_prose,
-            "image_prompt": first_turn.image_prompt
+            "choices": first_turn.choices,
+            "image_prompt": first_turn.image_prompt,
+            "events": init_scene.get("events", [])
         }
 
     async def create_perceptual_context(
@@ -158,30 +157,28 @@ KÄYTTÄJÄN TOIVE / POHJA-AJATUS: {user_idea or 'Keksi omaperäinen ja koukutta
         character: Character,
         scene: Scene,
         recent_prose: str,
-        other_recent_actions: str
+        other_recent_actions: str,
+        tone_profile: str = "default",
+        custom_tone_override: Optional[str] = None
     ) -> str:
         """Suodattaa ja muodostaa aistisyötteen: mitä kyseinen hahmo näkee, kuulee ja tietää tässä hetkessä."""
         
-        system_prompt = f"""
-{UNIVERSAL_SAFETY_DIRECTIVE}
+        system_prompt = prompt_loader.compose_system_prompt(
+            prompt_name="director/perceptual_filter",
+            tone_profile=tone_profile,
+            custom_tone_override=custom_tone_override,
+            character_name=character.name
+        )
 
-Olet roolipelisimulaattorin Aistisuodatin (Perceptual Filter).
-Tehtäväsi on kuvata roolihahmolle '{character.name}', mitä hän suoraan aistii, näkee, kuulee ja tuntee tilanteessa.
-
-SÄÄNNÖT:
-- Älä kerro muiden hahmojen salaisia ajatuksia tai asioita, joita hahmo ei voi nähdä tai kuulla.
-- Jos joku puhui tai teki jotain näkyvää/kuuluvaa, kerro se selkeästi.
-- Pidä aistikuvaus tiiviinä (2-4 virkettä), suorana ja havainnollisena.
-"""
         user_prompt = f"""
-HAHMO: {character.name} (Sijainti: {scene.location})
-VIIMEISIN TAPAHTUMAPROOSA:
+CHARACTER: {character.name} (Location: {scene.location})
+RECENT SCENE PROSE CONTEXT:
 {recent_prose}
 
-MUIDEN HAHMOJEN VIIMEISIMMÄT TOIMET/PUHEET:
-{other_recent_actions or 'Ei edeltäviä toimia tällä vuorolla.'}
+RECENT ACTIONS / SPEECHES OF OTHER NEARBY CHARACTERS:
+{other_recent_actions or 'No immediate preceding actions in this specific exchange.'}
 
-Kirjoita aistikuvaus suoraan hahmolle '{character.name}'.
+Deliver the sensory perception briefing directly for '{character.name}'.
 """
         messages = [
             {"role": "system", "content": system_prompt},
@@ -189,7 +186,7 @@ Kirjoita aistikuvaus suoraan hahmolle '{character.name}'.
         ]
 
         try:
-            return await self.llm.chat_completion(messages=messages, temperature=0.7, max_tokens=300)
+            return await self.llm.chat_completion(messages=messages, temperature=0.7, max_tokens=400, role="director", story_id=story_id)
         except Exception:
             return f"Olet tilassa {scene.location}. Havaitset ympärilläsi olevat hahmot ja tilanteen kehittyvän."
 
@@ -197,86 +194,146 @@ Kirjoita aistikuvaus suoraan hahmolle '{character.name}'.
         self,
         story_id: str,
         scene: Scene,
-        acting_character: Optional[Character],
-        action_and_speech: str,
-        internal_monologue: str,
+        all_character_intentions: List[Dict[str, Any]],
         recent_prose_context: str,
-        director_guidance: Optional[str] = None
+        director_guidance: Optional[str] = None,
+        tone_profile: str = "default",
+        custom_tone_override: Optional[str] = None,
+        mode: str = "novel",
+        reader_wish: Optional[str] = None,
+        runtime: Optional[Dict[str, Any]] = None,
+        characters: Optional[List[Character]] = None,
+        player_character_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Kirjoittaa toiminnasta ja puheesta rikkaan, kirjamaisen suomenkielisen proosakappaleen sekä kuvauspromptin."""
+        """Kirjoittaa monihahmoisista aikeista rikkaan suomenkielisen proosakappaleen.
+        
+        all_character_intentions: Lista dictionaryja, kukin sisältäen:
+            - character_id: str
+            - character_name: str
+            - action_and_speech: str  (hahmon yritys/aie)
+            - internal_monologue: str (hahmon sisäinen monologi)
+        """
         
         meta = await db.get_story_meta(story_id)
         chronicle = await db.get_chronicle(story_id)
-        chronicle_summary = "\n".join([f"- {c.summary}" for c in chronicle[-3:]]) if chronicle else "Tarina on alussa."
+        chronicle_summary = "\n".join([f"- {c.summary}" for c in chronicle[-4:]]) if chronicle else "Tarina on alussa."
 
-        system_prompt = f"""
-{UNIVERSAL_SAFETY_DIRECTIVE}
+        system_prompt = prompt_loader.compose_system_prompt(
+            prompt_name="director/synthesize_prose",
+            tone_profile=tone_profile,
+            custom_tone_override=custom_tone_override,
+            story_title=meta.title if meta else 'Tarina',
+            story_genre=meta.genre if meta else 'Seikkailu'
+        )
 
-Olet palkittu, mestarillinen kirjailija ja tarinankertoja.
-Kirjoitat tarinaa '{meta.title if meta else 'Tarina'}' (Genre: {meta.genre if meta else 'Seikkailu'}).
+        # Muodostetaan kaikkien hahmojen aikeet yhdeksi blokiksi
+        intentions_block = ""
+        for intention in all_character_intentions:
+            char_name = intention.get("character_name", "Tuntematon")
+            char_id = intention.get("character_id", "?")
+            action = intention.get("action_and_speech", "")
+            monologue = intention.get("internal_monologue", "")
+            intentions_block += f"""
+--- {char_name} (id: {char_id}) ---
+Intention / Attempted Action & Speech:
+{action}
 
-TEHTÄVÄSI:
-Kirjoita seuraava rikas, elävä, kaunokirjallinen proosakappale suomeksi.
-Yhdistä hahmon teot ja vuorosanat saumattomasti tarinan jatkumoon.
-Kuvata ympäristöä, ääniä, eleitä, ilmeitä ja jännitettä.
-Pidä kieli luontevana, elävänä ja nautittavana ilman kliseitä.
-
-[MAAILMAN TAUSTAT]
-{meta.world_lore if meta else ''}
-
-[VIIMEAIKAISET TAPAHTUMAT (CHRONICLE)]
-{chronicle_summary}
-
-[SALAISEN JUONEN SUUNTA]
-{meta.director_plot_arc if meta else ''}
-
-[OHJEET VASTAUKSELLE]
-Palauta VAIN JSON seuraavassa muodossa:
-{{
-  "prose": "Kirjamainen, huoliteltu ja kuvaileva tarinakappale suomeksi (1-3 laadukasta kappaletta).",
-  "world_update": "Jos tapahtumassa paljastui merkittävä uusi maailman tieto, kirjaa se lyhyesti tähän (muuten tyhjä).",
-  "plot_pivot_needed": false,
-  "plot_pivot_note": "Jos hahmon toimet muuttivat juonen suuntaa, kirjaa miten Pääagentti sopeuttaa tarinaa jatkossa.",
-  "image_prompt": "Detailed cinematic prompt in English for text-to-image AI capturing this scene, style: artistic atmospheric digital painting."
-}}
+Private Internal Monologue (for narrator's use only):
+{monologue}
 """
+
+        if not intentions_block.strip():
+            intentions_block = "Maailma elää ja tapahtumat etenevät omalla painollaan."
 
         user_content = f"""
-SIJAINTI: {scene.location}
-TOIMIVA HAHMO: {acting_character.name if acting_character else 'Yleinen maailmantapahtuma'}
-HAHMON TEKO JA PUHE:
-{action_and_speech}
+[CURRENT SCENE]
+Location: {scene.location}
+Scene Goal / Tension: {scene.scene_goal}
 
-HAHMON SALAINEN AJATUS (voit hyödyntää kaikkitietävänä kertojana tunnelmassa):
-{internal_monologue}
+[WORLD LORE & CONTEXT]
+{meta.world_lore if meta else ''}
 
-EDELTÄVÄ TARINATEKSTI:
-{recent_prose_context[-1500:] if len(recent_prose_context) > 1500 else recent_prose_context}
+[RECENT CHRONICLE SUMMARY]
+{chronicle_summary}
+
+[SECRET PLOT ARC TRAJECTORY]
+{meta.director_plot_arc if meta else ''}
+
+[DIRECTOR NOTES]
+{meta.director_notes if meta else ''}
+
+[ENGINE MODE]
+{mode}
+Player character ID: {player_character_id or 'none'}
+Reader wish: {reader_wish or 'none'}
+
+[CUMULATIVE CONTINUITY STATE]
+{json.dumps(runtime or {}, ensure_ascii=False)}
+
+[CHARACTER DOSSIERS - NARRATOR ONLY]
+{json.dumps([character.model_dump() for character in (characters or [])], ensure_ascii=False)}
+
+[ALL CHARACTERS' INTENTIONS & ATTEMPTS THIS MOMENT]
+{intentions_block}
+
+[PRECEDING STORY PROSE]
+{recent_prose_context}
 """
         if director_guidance:
-            user_content += f"\n[OHJAAJAN ERIKOISOHJE]: {director_guidance}\n"
+            user_content += f"\n[DIRECTOR OVERRIDE / GUIDANCE]: {director_guidance}\n"
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
         ]
 
+        prose_schema = pydantic_to_json_schema(ProseTurnResponse, "prose_turn")
+        policies = {
+            "novel": "Continue routine activity fluently. Stop before an important independent character decision and request it through decision_character_ids.",
+            "simulation": "Resolve a meaningful situation from the supplied independent character intentions; avoid unnecessary round-robin speeches.",
+            "roleplay": "Preserve the designated player's attempted action and private intention. Stop before choosing their next important action."
+        }
+        messages[0]["content"] += (
+            f"\n\nENGINE CONTRACT ({mode}): {policies[mode]} "
+            "Return a complete schema-valid result, cumulative summary, updated facts and unresolved threads. "
+            "Current continuity supersedes the initial plot or lore when events changed them. "
+            "Events contain only observable descriptions and explicit witness IDs, never private thoughts or director instructions. "
+            "Empty witness lists are narrator-only facts. Do not grant offstage characters observations."
+        )
+        data = await self.llm.json_completion(
+            messages=messages, role="director", json_schema=prose_schema, story_id=story_id
+        )
+        return ProseTurnResponse.model_validate(data).model_dump()
+
+    async def check_narrative_watchdog(
+        self,
+        story_id: str,
+        recent_chronicles: List[ChronicleEntry],
+        recent_turns: List[SceneTurn]
+    ) -> Optional[Dict[str, Any]]:
+        """Tarkistaa onko tarina jumiutunut tai toistaako se samaa kaavaa."""
+        if not recent_chronicles and not recent_turns:
+            return None
+
+        system_prompt = prompt_loader.compose_system_prompt("director/watchdog_reflection")
+
+        summary_text = "\n".join([f"- Luku {c.chapter_index}: {c.summary}" for c in recent_chronicles[-5:]])
+        recent_prose_snippets = "\n".join([f"Turn {t.turn_index}: {t.director_prose[:180]}..." for t in recent_turns[-4:]])
+
+        user_content = f"""
+RECENT CHRONICLE LOGS:
+{summary_text}
+
+RECENT PROSE TURNS:
+{recent_prose_snippets}
+"""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+
         try:
-            data = await self.llm.json_completion(messages=messages, role="director")
-        except Exception as e:
-            # Varalogiikka jos JSON pettää
-            raw_text = await self.llm.chat_completion(messages=messages, role="director")
-            data = {
-                "prose": raw_text,
-                "world_update": "",
-                "plot_pivot_needed": False,
-                "plot_pivot_note": "",
-                "image_prompt": f"Dramatic scene in {scene.location}"
-            }
-
-        # Jos juonimuutos tarvitaan, päivitetään director_notes
-        if data.get("plot_pivot_needed") and data.get("plot_pivot_note") and meta:
-            meta.director_notes = f"{meta.director_notes}\n[Juonimuutos]: {data.get('plot_pivot_note')}".strip()
-            await db.save_story_meta(story_id, meta)
-
-        return data
+            result = await self.llm.json_completion(messages=messages, temperature=0.4, role="director", story_id=story_id)
+            return result
+        except Exception:
+            return None

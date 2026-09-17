@@ -2,7 +2,7 @@ import json
 from typing import Dict, Any, List, Optional
 from core.llm_client import LLMClient
 from core.types import ChronicleEntry, SceneTurn
-from core.safety import UNIVERSAL_SAFETY_DIRECTIVE
+from core.prompt_loader import prompt_loader
 import database.db as db
 
 class ChronicleManager:
@@ -18,7 +18,9 @@ class ChronicleManager:
         story_id: str,
         chapter_index: int,
         scene_index: int,
-        recent_turns: List[SceneTurn]
+        recent_turns: List[SceneTurn],
+        tone_profile: str = "default",
+        custom_tone_override: Optional[str] = None
     ) -> Optional[ChronicleEntry]:
         """Luo tiiviin, tarkan kronikkakirjauksen viimeaikaisista tarinavuoroista."""
         if not recent_turns:
@@ -31,27 +33,20 @@ class ChronicleManager:
             for t in recent_turns
         ])
 
-        system_prompt = f"""
-{UNIVERSAL_SAFETY_DIRECTIVE}
+        system_prompt = prompt_loader.compose_system_prompt(
+            prompt_name="chronicle/summarize",
+            tone_profile=tone_profile,
+            custom_tone_override=custom_tone_override
+        )
 
-Olet tarinakronikoitsija. Tehtäväsi on tiivistää tarinan viimeisimmät tapahtumat
-tarkaksi, ytimekkääksi (2-4 virkettä) tapahtumalokiksi ja poimia merkittävät yleistietoon tulleet maailmanmuutokset.
-
-Palauta VAIN JSON:
-{{
-  "summary": "Tiivis ja faktapohjainen tiivistelmä merkittävistä tapahtumista, päätöksistä ja seurauksista.",
-  "world_updates": "Jos maailmaan tuli pysyviä muutoksia tai uutta julkista tietoa, listaa ne tässä (muuten tyhjä)."
-}}
-"""
-
-        user_content = f"TAPAHTUMAT:\n{turns_text}"
+        user_content = f"TAPAHTUMAT JA TOIMET:\n{turns_text}"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
         ]
 
         try:
-            data = await self.llm.json_completion(messages=messages, temperature=0.5)
+            data = await self.llm.json_completion(messages=messages, temperature=0.5, role="director", story_id=story_id)
             entry = ChronicleEntry(
                 chapter_index=chapter_index,
                 scene_index=scene_index,
@@ -70,7 +65,6 @@ Palauta VAIN JSON:
 
             return entry
         except Exception:
-            # Fallback yksinkertaiselle tiivistelmälle
             entry = ChronicleEntry(
                 chapter_index=chapter_index,
                 scene_index=scene_index,

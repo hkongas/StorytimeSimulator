@@ -1,231 +1,214 @@
+import asyncio
+import hashlib
 import json
-from pathlib import Path
-from typing import Dict, Any, List, Optional
+import shutil
+from typing import Any, AsyncIterator, Optional
+from uuid import uuid4
+
 from config import settings
-from core.types import StoryMeta, Character, Scene, SceneTurn, StoryInitRequest, TurnResponse
-from engine.director_agent import DirectorAgent
+from core.llm_client import LLMClient
+from core.schemas import ProseTurnResponse
+from core.prompt_loader import prompt_loader
+from core.types import Character, SceneTurn, StoryInitRequest, TurnResponse, normalize_mode
+from database import db, turn_store
 from engine.character_agent import CharacterAgent
 from engine.chronicle_manager import ChronicleManager
-from core.llm_client import LLMClient
-import database.db as db
+from engine.director_agent import DirectorAgent
+
 
 class StoryEngine:
-    """Tarinamoottorin ydin: orkestroidaan Pääagentti, Hahmoagentit ja tiedostojen tallennus."""
-
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm = llm_client or LLMClient()
         self.director = DirectorAgent(self.llm)
         self.chronicle = ChronicleManager(self.llm)
+        self._locks: dict[str, asyncio.Lock] = {}
+        self.max_concurrent_characters = 5
 
-    def _get_story_dir(self, story_id: str) -> Path:
-        story_dir = settings.STORIES_DIR / story_id
-        story_dir.mkdir(parents=True, exist_ok=True)
-        return story_dir
+    def is_busy(self, story_id: str | None = None) -> bool:
+        if story_id is None:
+            return any(lock.locked() for lock in self._locks.values())
+        return story_id in self._locks and self._locks[story_id].locked()
 
-    def _append_to_story_files(self, story_id: str, prose_snippet: str, chapter_header: Optional[str] = None):
-        """Kirjoittaa reaaliaikaisesti uutta tekstiä story.txt- ja story.md-tiedostoihin."""
-        story_dir = self._get_story_dir(story_id)
-        txt_path = story_dir / "story.txt"
-        md_path = story_dir / "story.md"
-
-        # Puhdas tekstitiedosto
-        with open(txt_path, "a", encoding="utf-8") as f:
-            if chapter_header:
-                f.write(f"\n\n=== {chapter_header} ===\n\n")
-            f.write(f"{prose_snippet.strip()}\n\n")
-
-        # Markdown-tiedosto
-        with open(md_path, "a", encoding="utf-8") as f:
-            if chapter_header:
-                f.write(f"\n\n# {chapter_header}\n\n")
-            f.write(f"{prose_snippet.strip()}\n\n")
-
-    async def initialize_new_story(self, request: StoryInitRequest) -> Dict[str, Any]:
-        """Luo uuden tarinaprojektin ja alustaa maailman ja tiedostot."""
-        # Luodaan turvallinen story_id otsikosta
+    async def initialize_new_story(self, request: StoryInitRequest) -> dict[str, Any]:
         raw_id = request.title.lower().strip()
-        safe_id = "".join([c if c.isalnum() else "_" for c in raw_id]).strip("_")[:40] or "tarina"
-        
-        # Varmistetaan uniikki ID
+        safe_id = "".join(char if char.isalnum() else "_" for char in raw_id).strip("_")[:40] or "tarina"
+        story_id = safe_id
         counter = 1
-        final_id = safe_id
-        while (settings.STORIES_DIR / final_id).exists():
-            final_id = f"{safe_id}_{counter}"
+        while db.get_story_dir(story_id).exists():
+            story_id = f"{safe_id}_{counter}"
             counter += 1
-
-        story_dir = self._get_story_dir(final_id)
-
-        # 1. Alustetaan SQLite-tietokanta
-        await db.init_story_db(final_id)
-
-        # 2. Pyydetään Pääagentilta maailmanluonti
-        init_data = await self.director.initialize_story(
-            story_id=final_id,
-            title=request.title,
-            genre=request.genre or "Seikkailu",
-            user_idea=request.user_idea or "",
-            player_char_name=request.player_character_name if request.user_role == "player" else None,
-            player_char_details=request.player_character_details if request.user_role == "player" else None,
-            custom_plot_idea=request.custom_plot_idea
-        )
-
-        # 3. Luodaan aloitustiedostot
-        meta = init_data["meta"]
-        opening_prose = init_data["opening_prose"]
-
-        # Alustetaan tiedostot otsikolla
-        txt_path = story_dir / "story.txt"
-        md_path = story_dir / "story.md"
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(f"{meta.title}\nGenre: {meta.genre}\n{'='*len(meta.title)}\n\n{opening_prose}\n\n")
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(f"# {meta.title}\n*Genre: {meta.genre}*\n\n---\n\n{opening_prose}\n\n")
-
-        return {
-            "story_id": final_id,
-            "meta": meta,
-            "characters": init_data["characters"],
-            "scene": init_data["scene"],
-            "opening_prose": opening_prose,
-            "image_prompt": init_data.get("image_prompt")
-        }
-
-    async def advance_turn(
-        self,
-        story_id: str,
-        user_input: Optional[str] = None,
-        mode: str = "reader",
-        director_guidance: Optional[str] = None
-    ) -> TurnResponse:
-        """Suorittaa yhden tarinavuoron (Pääagentti + Hahmoagentti + Proosasynteesi)."""
-        
-        # 1. Haetaan aktiivinen kohtaus ja hahmot
-        active_scene = await db.get_active_scene(story_id)
-        if not active_scene:
-            # Luodaan oletuskohtaus jos ei ole
-            active_scene = Scene(
-                chapter_number=1,
-                location="Tapahtumapaikka",
-                scene_goal="Tarina jatkuu",
-                active_character_ids=[],
-                is_active=True
+        directory = db.get_story_dir(story_id)
+        directory.mkdir(parents=True, exist_ok=False)
+        try:
+            await db.init_story_db(story_id)
+            mode = normalize_mode(request.user_role)
+            result = await self.director.initialize_story(
+                story_id=story_id, title=request.title, genre=request.genre or "Seikkailu",
+                user_idea=request.user_idea or "",
+                player_char_name=request.player_character_name if mode == "roleplay" else None,
+                player_char_details=request.player_character_details if mode == "roleplay" else None,
+                custom_plot_idea=request.custom_plot_idea,
+                tone_profile=request.tone_profile or "default",
+                custom_tone_override=request.custom_tone_override
             )
-            scene_id = await db.create_scene(story_id, active_scene)
-            active_scene.id = scene_id
+            events = result.get("events", [])
+            if mode == "roleplay":
+                player = next((character for character in result["characters"] if character.is_player_controlled), None)
+                player = player or next(iter(result["characters"]), None)
+                if player is None:
+                    raise ValueError("Roolipeli tarvitsee pelaajahahmon.")
+                await db.set_player_character(story_id, player.id)
+                for character in result["characters"]:
+                    character.is_player_controlled = character.id == player.id
+            if any(not set(event["witnesses"]) <= {character.id for character in result["characters"]} for event in events):
+                raise ValueError("Aloituskohtaus viittaa tuntemattomaan havaitsijaan.")
+            observations = {
+                character.id: "\n".join(event["description"] for event in events if character.id in event["witnesses"])
+                or f"Olet paikassa {result['scene'].location}."
+                for character in result["characters"]
+            }
+            await turn_store.seed_observations(story_id, observations)
+            await turn_store.rebuild_exports(story_id)
+            return {"story_id": story_id, **result, "mode": mode}
+        except BaseException:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
 
-        all_characters = await db.get_all_characters(story_id)
-        char_map = {c.id: c for c in all_characters}
+    async def advance_turn_streaming(
+        self, story_id: str, user_input: Optional[str] = None, mode: str = "novel",
+        director_guidance: Optional[str] = None, private_intention: Optional[str] = None,
+        request_id: Optional[str] = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        db.get_story_dir(story_id)
+        if mode == "director":
+            director_guidance = director_guidance or user_input
+            user_input = None
+        mode = normalize_mode(mode)
+        request_id = request_id or uuid4().hex
+        fingerprint = hashlib.sha256(json.dumps([mode, user_input, director_guidance, private_intention], ensure_ascii=False).encode()).hexdigest()
+        lock = self._locks.setdefault(story_id, asyncio.Lock())
+        async with lock:
+            if not db.get_db_path(story_id).exists():
+                raise ValueError("Tarinaa ei löydy.")
+            revision = await turn_store.get_revision(story_id)
+            meta = await db.get_story_meta(story_id)
+            if not meta:
+                raise ValueError("Tarinaa ei löydy.")
+            previous = await turn_store.get_receipt(story_id, request_id, fingerprint)
+            if previous:
+                yield {"type": "turn_complete", "data": previous.model_dump()}
+                return
+            yield {"type": "phase", "phase": "context_loading", "message": "Kootaan tilanne ja hahmojen havainnot..."}
+            scene = await db.get_active_scene(story_id)
+            if not scene or scene.id is None:
+                raise ValueError("Tarinalta puuttuu aktiivinen kohtaus.")
+            characters = await db.get_all_characters(story_id)
+            roster = {character.id: character for character in characters}
+            present = [character for character in characters if character.id in scene.active_character_ids and character.status == "active"]
+            turns = await db.get_all_story_turns(story_id)
+            last_id = max((turn.id or 0 for turn in turns), default=0)
+            turn_index = max((turn.turn_index for turn in turns), default=0) + 1
+            runtime = await turn_store.get_runtime(story_id)
+            player = next((character for character in present if character.is_player_controlled), None)
+            if mode == "roleplay" and player is None:
+                raise ValueError("Valitse kohtauksessa oleva toimintakykyinen pelaajahahmo.")
+            intentions = []
+            if mode == "roleplay" and player:
+                intentions.append({"character_id": player.id, "character_name": player.name,
+                                   "action_and_speech": user_input or "Odotan ja tarkkailen.",
+                                   "internal_monologue": private_intention or ""})
+            decision_ids = set(runtime.get("decision_character_ids", []))
+            acting = [character for character in present
+                      if not (mode == "roleplay" and character.is_player_controlled)
+                      and (mode != "novel" or character.id in decision_ids)]
+            semaphore = asyncio.Semaphore(self.max_concurrent_characters)
 
-        # 2. Haetaan aiemmat vuorot kontekstiksi
-        recent_turns = await db.get_scene_turns(story_id, active_scene.id)
-        turn_index = len(recent_turns) + 1
-        recent_prose_list = [t.director_prose for t in recent_turns[-4:]]
-        recent_prose_context = "\n\n".join(recent_prose_list)
+            async def decide(character: Character):
+                async with semaphore:
+                    observation = await turn_store.get_observation(story_id, character.id)
+                    decision = await CharacterAgent(character, self.llm).decide_intention(
+                        story_id=story_id, scene_location=scene.location,
+                        recent_prose_context=observation, tone_profile=meta.tone_profile,
+                        custom_tone_override=meta.custom_tone_override
+                    )
+                    return {"character_id": character.id, "character_name": character.name, **decision}
 
-        # 3. Valitaan vuorossa oleva hahmo
-        acting_char: Optional[Character] = None
-        player_instruction = None
-
-        if mode == "player" and user_input:
-            # Etsitään pelaajan ohjaama hahmo
-            for char in all_characters:
-                if char.is_player_controlled:
-                    acting_char = char
-                    player_instruction = user_input
-                    break
-
-        if not acting_char and all_characters:
-            # Valitaan NPC vuoroon (vuorotellaan tai satunnaistetaan läsnäolijoiden kesken)
-            if active_scene.active_character_ids:
-                # Etsitään kuka ei ole toiminut viimeksi
-                last_acting_id = recent_turns[-1].acting_character_id if recent_turns else None
-                candidates = [c for c in all_characters if c.id in active_scene.active_character_ids and c.id != last_acting_id]
-                acting_char = candidates[0] if candidates else all_characters[0]
-            else:
-                acting_char = all_characters[0]
-
-        # 4. Hahmoagentin vuoro (jos hahmo löytyi)
-        internal_monologue = ""
-        action_and_speech = ""
-
-        if acting_char:
-            # Luodaan hahmolle aistikuvaus
-            perceived_context = await self.director.create_perceptual_context(
-                story_id=story_id,
-                character=acting_char,
-                scene=active_scene,
-                recent_prose=recent_prose_context,
-                other_recent_actions=recent_turns[-1].character_action if recent_turns else ""
+            if acting:
+                yield {"type": "phase", "phase": "characters_thinking", "message": f"Hahmot tekevät ratkaisujaan ({len(acting)})..."}
+                decisions = await asyncio.gather(*(decide(character) for character in acting), return_exceptions=True)
+                for decision in decisions:
+                    if isinstance(decision, BaseException):
+                        raise decision
+                    intentions.append(decision)
+            yield {"type": "phase", "phase": "prose_synthesis", "message": "Kertoja ratkaisee tapahtumat ja kirjoittaa jatkon..."}
+            raw = await self.director.synthesize_turn_prose(
+                story_id=story_id, scene=scene, all_character_intentions=intentions,
+                recent_prose_context="\n\n".join(turn.director_prose for turn in turns[-3:])[-12000:],
+                director_guidance=director_guidance, tone_profile=meta.tone_profile,
+                custom_tone_override=meta.custom_tone_override, mode=mode,
+                reader_wish=user_input if mode != "roleplay" else None,
+                runtime=runtime, characters=characters,
+                player_character_id=player.id if mode == "roleplay" and player else None
             )
-
-            # Ajetaan hahmoagentin päätöksenteko
-            char_agent = CharacterAgent(acting_char, self.llm)
-            decision = await char_agent.decide_action(
-                story_id=story_id,
-                scene_location=active_scene.location,
-                perceived_context=perceived_context,
-                director_nudge=director_guidance,
-                player_instruction=player_instruction
+            outcome = ProseTurnResponse.model_validate(raw)
+            spawned = []
+            for candidate in outcome.spawned_characters:
+                if candidate.id in roster or not candidate.id or not all(char.isalnum() or char in "_-" for char in candidate.id):
+                    raise ValueError("Kertoja palautti päällekkäisen tai virheellisen hahmotunnisteen.")
+                character = Character(**candidate.model_dump(), status="active")
+                character.is_player_controlled = False
+                roster[character.id] = character
+                spawned.append(character)
+            allowed_witnesses = set(scene.active_character_ids) | {character.id for character in spawned}
+            for event in outcome.events:
+                if not set(event.witnesses) <= allowed_witnesses:
+                    raise ValueError("Tapahtuman havaitsija ei ole kohtauksessa.")
+            for update in outcome.character_state_updates:
+                if update.character_id not in roster:
+                    raise ValueError("Tilapäivitys viittaa tuntemattomaan hahmoon.")
+                character = roster[update.character_id]
+                for field in ("physical_state", "mental_state", "status"):
+                    value = getattr(update, field)
+                    if value is not None:
+                        setattr(character, field, value)
+            if outcome.active_character_ids is None:
+                outcome.active_character_ids = list(scene.active_character_ids) + [character.id for character in spawned]
+            if not set(outcome.active_character_ids) <= roster.keys() or not set(outcome.decision_character_ids) <= roster.keys():
+                raise ValueError("Kertoja viittaa tuntemattomaan aktiiviseen hahmoon.")
+            for intention in intentions:
+                roster[intention["character_id"]].last_active_turn = turn_index
+            action = "\n".join(f"[{intention['character_name']}]: {intention['action_and_speech']}" for intention in intentions)
+            monologue = "\n".join(f"[{intention['character_name']}]: {intention['internal_monologue']}" for intention in intentions)
+            response = TurnResponse(
+                turn_index=turn_index, mode=mode, request_id=request_id,
+                acting_character=player.model_dump() if mode == "roleplay" and player else None,
+                internal_monologue=monologue, character_action=action, director_prose=outcome.prose,
+                choices=outcome.choices, image_prompt=outcome.image_prompt,
+                updated_characters=list(roster.values()), spawned_characters=spawned,
+                story_text_snippet=outcome.prose, is_chapter_end=outcome.chapter_end
             )
+            turn = SceneTurn(scene_id=scene.id, turn_index=turn_index,
+                             acting_character_id=player.id if mode == "roleplay" and player else None,
+                             internal_monologue=monologue, character_action=action,
+                             director_prose=outcome.prose, choices=outcome.choices, image_prompt=outcome.image_prompt)
+            await turn_store.commit_turn(story_id, last_id, turn, list(roster.values()), outcome, response, fingerprint,
+                {"mode": mode, "user_input": user_input, "private_intention": private_intention,
+                 "director_guidance": director_guidance, "director_model": settings.DIRECTOR_MODEL,
+                 "character_model": settings.CHARACTER_MODEL, "intentions": intentions,
+                 "contract_version": 1,
+                 "prompt_hashes": {path: hashlib.sha256(prompt_loader.get_raw_prompt(path).encode()).hexdigest()
+                    for path in ("director/synthesize_prose.txt", "character/decide_action.txt", "language_directive.txt", "safety_directive.txt", f"tone_profiles/{meta.tone_profile}.txt")}},
+                expected_revision=revision)
+            try:
+                await turn_store.rebuild_exports(story_id)
+            except OSError:
+                response.warnings.append("Vuoro tallennettiin. Tekstivienti korjataan seuraavan viennin yhteydessä.")
+            yield {"type": "turn_complete", "data": response.model_dump()}
 
-            internal_monologue = decision.get("internal_monologue", "")
-            action_and_speech = decision.get("action_and_speech", "")
-        else:
-            # Maailmanlaajuinen tapahtuma ilman tiettyä hahmoa
-            perceived_context = "Maailman tapahtumat etenevät."
-            action_and_speech = user_input or "Aika kuluu ja ympäristössä tapahtuu muutos."
-
-        # 5. Pääagentti kirjoittaa kaunokirjallisen proosakappaleen
-        prose_result = await self.director.synthesize_turn_prose(
-            story_id=story_id,
-            scene=active_scene,
-            acting_character=acting_char,
-            action_and_speech=action_and_speech,
-            internal_monologue=internal_monologue,
-            recent_prose_context=recent_prose_context,
-            director_guidance=director_guidance if mode == "director" else None
-        )
-
-        director_prose = prose_result.get("prose", action_and_speech)
-        image_prompt = prose_result.get("image_prompt", "")
-
-        # 6. Tallennetaan vuoro tietokantaan
-        scene_turn = SceneTurn(
-            scene_id=active_scene.id,
-            turn_index=turn_index,
-            acting_character_id=acting_char.id if acting_char else None,
-            perceived_context=perceived_context,
-            internal_monologue=internal_monologue,
-            character_action=action_and_speech,
-            director_prose=director_prose,
-            image_prompt=image_prompt
-        )
-        await db.add_scene_turn(story_id, scene_turn)
-
-        # 7. Kirjoitetaan lisäys story.txt ja story.md tiedostoihin
-        self._append_to_story_files(story_id, director_prose)
-
-        # 8. Tiivistys (Chronicle) säännöllisin väliajoin (esim. joka 4. vuoro)
-        if turn_index % 4 == 0:
-            all_scene_turns = await db.get_scene_turns(story_id, active_scene.id)
-            await self.chronicle.summarize_scene_or_turns(
-                story_id=story_id,
-                chapter_index=active_scene.chapter_number,
-                scene_index=active_scene.id,
-                recent_turns=all_scene_turns[-4:]
-            )
-
-        # Haetaan päivitetyt hahmotiedot vastausta varten
-        updated_characters = await db.get_all_characters(story_id)
-
-        return TurnResponse(
-            turn_index=turn_index,
-            acting_character=acting_char.dict() if acting_char else None,
-            internal_monologue=internal_monologue,
-            character_action=action_and_speech,
-            director_prose=director_prose,
-            image_prompt=image_prompt,
-            updated_characters=updated_characters,
-            story_text_snippet=director_prose,
-            is_chapter_end=False
-        )
+    async def advance_turn(self, story_id: str, user_input: Optional[str] = None,
+                           mode: str = "novel", director_guidance: Optional[str] = None,
+                           private_intention: Optional[str] = None, request_id: Optional[str] = None) -> TurnResponse:
+        async for event in self.advance_turn_streaming(story_id, user_input, mode, director_guidance, private_intention, request_id):
+            if event["type"] == "turn_complete":
+                return TurnResponse.model_validate(event["data"])
+        raise RuntimeError("Vuoro ei valmistunut.")

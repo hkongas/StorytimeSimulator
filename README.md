@@ -1,239 +1,113 @@
-# 📜 StorytimeSimulator (Tarinamoottori)
+# Tarinamoottori / StorytimeSimulator
 
-> **Autonomous Multi-Agent AI Roleplaying Simulator & Literary Novel Generator**  
-> *Where independent minds, sensory perception, and narrative direction collide to create living literature.*
+Paikallisesti tallentava, selainkäyttöinen tarinamoottori. Sama tarina voi jatkua romaanina, itsenäisten hahmojen simulaationa tai yhden hahmon roolipelinä. Maailmaan voi puuttua missä tahansa tilassa.
 
----
+## Käynnistys
 
-## 🌟 Overview & Core Philosophy
+Python 3.10 tai uudempi ja LLM-palvelun API-avain. Testattu kehitysympäristössä Python 3.14:llä. Selain ei tarvitse Node.js:ää tai erillistä build-vaihetta.
 
-**StorytimeSimulator** (known in Finnish as *Tarinamoottori*) is an advanced multi-agent narrative simulation engine. Unlike conventional text-adventure bots or single-prompt story generators, StorytimeSimulator treats every story as a **living theatre**: an orchestrated simulation where individual characters possess private consciousness, sensory limitations, and emotional memory, guided by an autonomous Master Director Agent (Novelist & Game Master).
-
----
-
-## ⚡ What Makes StorytimeSimulator Unique?
-
-Most AI storytelling tools (such as AI Dungeon, NovelAI, or SillyTavern) rely on a single LLM prompt predicting the next tokens for all characters at once, leading to hive-mind behavior, broken context, and lack of true dramatic tension. 
-
-StorytimeSimulator introduces an entirely new architecture:
-
-```
-                      ┌────────────────────────────────────────┐
-                      │    Master Director Agent (Novelist)    │
-                      │  - Shared World Lore & Rules           │
-                      │  - Secret Overarching Plot & Pivoting  │
-                      │  - Condensed Chronicle (Context Keeper)│
-                      │  - Rich Literary Prose Synthesizer     │
-                      │  - Cinematic Image Prompt Generator    │
-                      └──────────────────┬─────────────────────┘
-                                         │
-                 Perceptual Filtering    │    Sensory Input
-                 (Sight, Sound, Lore)    │    (No Telepathy)
-                                         ▼
-         ┌───────────────────────────────┴───────────────────────────────┐
-         │                                                               │
-         ▼                                                               ▼
-┌─────────────────────────────────┐             ┌─────────────────────────────────┐
-│     Character Agent: Alice      │             │      Character Agent: Bob       │
-│ - Personality, Age, Bio         │             │ - Personality, Age, Bio         │
-│ - Physical & Mental State       │             │ - Physical & Mental State       │
-│ - Secret Motive & Hidden Trauma │             │ - Secret Motive & Hidden Trauma │
-│ - Private Memory Stream         │             │ - Private Memory Stream         │
-│ - Secret Internal Monologue     │             │ - Secret Internal Monologue     │
-│ - Public Speech & Physical Action│             │ - Public Speech & Physical Action│
-└─────────────────────────────────┘             └─────────────────────────────────┘
-```
-
-### 1. 🧠 True Sensory Isolation (No Telepathy or Omniscience)
-Characters do **not** know what other characters are secretly thinking, nor do they know the Director's hidden master plot. The Director Agent acts as a **Perceptual Filter**, describing to each character only what their eyes, ears, and previous knowledge allow them to perceive.
-
-### 2. 💭 Private Minds & Episodic Memory Stream
-Each character maintains an isolated state:
-* **Physical & Emotional Condition:** Fatigue, injuries, fear, excitement, suspicion.
-* **Secret Motive & Drive:** Hidden goals kept from companions and enemies.
-* **Internal Monologue:** Before taking any action, characters silently reflect in secret.
-* **Memory Stream:** Personal history of significant past moments that influence future choices.
-
-### 3. 🎭 Adaptive Director Agent (Novelist & Master Storyteller)
-The Director Agent coordinates the simulation:
-* **Dynamic Plot Pivoting:** If characters make unexpected decisions that derail the original plot, the Director organically adapts the story, creates dramatic complications, or steers towards new milestones.
-* **Kaunokirjallinen Proosa (Literary Prose):** Instead of raw chat logs, the Director synthesizes all character actions, speech, gestures, and world reactions into immersive, book-quality chapters.
-* **Context Preservation (Condensed Chronicle):** High-signal event summaries prevent long stories (50,000+ words) from overflowing context limits.
-* **Visual Scene Prompts:** Every scene turn automatically generates an artistic text-to-image prompt (Midjourney/Flux/DALL-E style).
-
-### 4. 🎮 Triple User Modes
-* 📖 **Reader Mode:** Sit back and read an unfolding novel. Optionally provide creative nudges or plot twists whenever you wish.
-* ⚔️ **Player Mode:** Take control of any character. Enter raw actions or dialogue—the engine adapts them to fit the scene and responds in character.
-* 🎭 **Director Mode:** Intervene behind the scenes with private directorial instructions (e.g. *"Introduce a mysterious stranger carrying a forged letter"*).
-
-### 5. 📦 Portable Character Cards (Selective Export & Import)
-Export characters as portable JSON cards to use across different stories and worlds. Choose exactly what to transfer:
-* ✅ Base Persona & Profile (Name, age, appearance, personality, bio)
-* ✅ Current Physical/Mental State & Secret Motive
-* ✅ Episodic Memory Stream (Memories formed during past adventures)
-
-### 6. 🔒 Ethical Creative Freedom & Minor Safety
-StorytimeSimulator supports uncensored, mature, psychologically intense, dark fantasy, cyberpunk, or romance storytelling without arbitrary puritanical constraints. However, it enforces a **hardcoded zero-tolerance safety directive**: Underage characters (< 18) are strictly prohibited from explicit sexual content or gratuitous extreme violence.
-
-### 7. 📁 Local-First, Private & File-Centric
-* **SQLite Database (`story.db`):** Complete state, character minds, memories, and turns stored locally per story.
-* **Live Text Synchronization:** The novel is continuously streamed and written to `story.txt` and `story.md` in real-time. Open and read your story in any text editor at any time.
-
----
-
-## 🚀 Quickstart & Installation
-
-### Prerequisites
-* **Python 3.10+** (Python 3.11, 3.12, 3.13, 3.14 supported)
-* **Git**
-* An API key for **xAI Grok** (recommended for creative freedom), **OpenAI**, or **OpenRouter**.
-
-### Installation Steps
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/hkongas/StorytimeSimulator.git
-   cd StorytimeSimulator
-   ```
-
-2. **Create and activate a virtual environment:**
-   * **Windows (PowerShell):**
-     ```powershell
-     python -m venv venv
-     .\venv\Scripts\Activate.ps1
-     ```
-   * **Linux / macOS:**
-     ```bash
-     python3 -m venv venv
-     source venv/bin/activate
-     ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Configure your API keys:**
-   Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` with your API key:
-   ```env
-   # xAI Grok (Recommended)
-   XAI_API_KEY=xai-your-api-key-here
-   LLM_PROVIDER=xai
-   DIRECTOR_MODEL=grok-2-latest
-   CHARACTER_MODEL=grok-2-latest
-   ```
-   *(Note: You can also enter and update API keys directly inside the Web UI Settings modal at any time).*
-
-5. **Start the application:**
-   ```bash
-   python main.py
-   ```
-
-6. **Open in browser:**
-   Navigate to **[http://127.0.0.1:8000](http://127.0.0.1:8000)**
-
----
-
-## 🌐 Multi-Language Support (i18n)
-
-StorytimeSimulator comes with built-in bilingual UI support:
-* **Suomi (FI)**
-* **English (EN)**
-
-Switch languages on the fly using the **🌐 FI / EN** toggle button in the top header. Your preference is remembered automatically.
-
----
-
-## 🏗️ Project Architecture
-
-```text
-StorytimeSimulator/
-├── config.py                 # Environment configuration & model settings
-├── main.py                   # Server launcher (FastAPI & Uvicorn)
-├── requirements.txt          # Python dependencies
-├── .env.example              # Template for API keys
-├── .gitignore                # Protects user stories, keys, and databases
-│
-├── core/
-│   ├── llm_client.py         # Async multi-provider LLM client (xAI, OpenAI, OpenRouter)
-│   ├── safety.py             # Content guidelines & minor protection rules
-│   └── types.py              # Pydantic data schemas
-│
-├── database/
-│   ├── db.py                 # Async SQLite database layer & memory manager
-│   └── schema.sql            # Relational database schema
-│
-├── engine/
-│   ├── character_agent.py    # Character Agent (private mind, senses, actions, memories)
-│   ├── director_agent.py     # Director Agent (world building, plot, sensory filter, prose)
-│   ├── chronicle_manager.py  # Event summarization & context window manager
-│   └── story_engine.py       # Simulation loop & live file stream coordinator
-│
-├── web/
-│   ├── api.py                # FastAPI REST endpoints & character export/import
-│   └── static/               # Responsive Web UI
-│       ├── index.html        # Book reader view, Mind Inspector & modals
-│       ├── i18n.js           # Multi-language dictionary (FI / EN)
-│       ├── app.js            # UI logic, state management & live rendering
-│       └── style.css         # Dark obsidian theme & book typography
-│
-├── tests/                    # Automated test suites
-│   ├── test_engine.py        # Core simulation, memory, and prose tests
-│   └── test_api.py           # Web API & character import/export tests
-│
-└── stories/                  # User stories (Excluded from git for privacy)
-    └── [story_name]/
-        ├── story.db          # Story SQLite database
-        ├── story.txt         # Plain text book export
-        └── story.md          # Markdown formatted book export
-```
-
----
-
-## 🧪 Running Automated Tests
-
-Run the engine and API test suites to verify that the environment and agents are operating correctly:
-
-```bash
-python tests/test_engine.py
-python tests/test_api.py
-```
-
----
-
-<br/>
-
----
-
-# 🇫🇮 Suomenkielinen Kuvaus (Tarinamoottori)
-
-**Tarinamoottori** on tekoälypohjainen roolipelisimulaattori ja kaunokirjallinen moniagenttitarinankirjoittaja.
-
-### Miksi Tarinamoottori on erilainen kuin muut?
-1. **Ei telepatiaa:** Hahmot eivät tiedä toistensa salaisia ajatuksia tai Pääagentin salaista juonta. Pääagentti suodattaa kullekin hahmolle vain sen, mitä hahmo aistii tilanteessa.
-2. **Yksityinen mieli:** Jokaisella hahmolla on salainen sisäinen monologi, omat motiivit, fyysinen/henkinen vointi ja oma muistivirta.
-3. **Pääagentti (Ohjaaja & Kirjailija):** Ohjaa tarinaa, sopeuttaa juonta hahmojen tekojen mukaan, tiivistää tapahtumia kronikaksi ja kirjoittaa kaunokirjallista, kirjamaista suomenkielistä proosaa.
-4. **Kolme käyttäjätilaa:** Lukijatila (automaattinen tarina + toiveet), Pelaajatila (ohjaa yhtä hahmoa) ja Ohjaajatila (salaiset juonikomennot).
-5. **Hahmojen vienti ja tuonti:** Voit siirtää suosikkihahmosi tarinasta toiseen valitsemalla, siirretäänkö persoona, nykytila vai koko muistihistoria.
-6. **Täysi paikallisuus & tietosuoja:** Kaikki tarinat tallentuvat omalle koneellesi SQLite-tietokantoina ja reaaliaikaisina `.txt`/`.md` -tekstitiedostoina.
-
-### Pika-aloitus
-```bash
-git clone https://github.com/hkongas/StorytimeSimulator.git
-cd StorytimeSimulator
+```powershell
 python -m venv venv
-.\venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python main.py
 ```
-Avaa selain osoitteessa: **http://127.0.0.1:8000**
 
----
+Avaa http://127.0.0.1:8000. API-avaimen ja mallit voi asettaa käyttöliittymässä tai projektin `.env`-tiedostossa käyttäen `.env.example`-mallia. Käytä yhtä palvelinprosessia. Automaattinen koodin uudelleenlataus on pois päältä, jotta muokkaus ei katkaise generointia.
 
-## 📄 License
+Jos portti on varattu:
 
-MIT License. Developed for open creative exploration and living literature simulation.
+```powershell
+python -m uvicorn web.api:app --host 127.0.0.1 --port 8001
+```
+
+## Kolme Toimintatapaa
+
+| Tila | Hahmojen päätökset | Kertojan tehtävä |
+| --- | --- | --- |
+| Romaani | Hahmokutsu vain edellisen vuoron osoittamissa merkittävissä päätöskohdissa. | Jatkaa rutiinitoimintaa ja siirtymiä sujuvasti. Pysähtyy ennen seuraavaa tärkeää itsenäistä ratkaisua. |
+| Simulaatio | Kaikki läsnä olevat toimintakykyiset hahmot tekevät oman ratkaisunsa. Korkeintaan viisi kutsua on samanaikaisesti käynnissä; muita hahmoja ei pudoteta pois. | Ratkaisee aikeiden ristiriidat ja tapahtumien seuraukset. Kaikkien ei tarvitse saada puheenvuoroa. |
+| Roolipeli | Pelaajan toiminta menee suoraan kertojalle. Muut läsnä olevat hahmot tekevät omat ratkaisunsa. | Säilyttää pelaajan yrityksen, ratkaisee seuraukset ja pysähtyy ennen pelaajan seuraavaa merkittävää valintaa. |
+
+Tilaa voi vaihtaa kesken tarinan. Hahmokortin **Pelaa hahmona** siirtää roolipeliin. Hahmon on oltava aktiivisessa kohtauksessa ja toimintakykyinen.
+
+- **Yksityinen aikomus** antaa pelaajan suunnitelman kertojalle, ei muiden hahmojen syötteeseen.
+- **Muuta maailmaa** antaa seuraavan vuoron maailmanmuutoksen kertojalle. Hahmot saavat muutoksen havaittavat seuraukset seuraaviin päätöksiinsä, eivät alkuperäistä ohjetta.
+- Romaanissa ja simulaatiossa voi valita rajatun automaattijatkon, enintään kymmenen jatkoa. Jokainen jatko voi tehdä maksullisia mallikutsuja.
+- **Keskeytä** lopettaa keskeneräisen työn. Jo hyväksyttyä vuoroa se ei peruuta.
+- **Näytä salaisuudet** avaa ohjaajan ja hahmojen yksityisiä tietoja. Se on lukukokemuksen valinta, ei käyttäjien välinen käyttöoikeusraja.
+
+## Vuoron Tietovirta
+
+```text
+Tarinan tila ja versio
+  -> tilan mukaan valitut hahmot + omat havainnot ja muistot
+  -> itsenäiset aikomukset / pelaajan suora toiminta
+  -> kertoja: tapahtumat, havaitsijat, seuraukset, jatkuvuus ja proosa
+  -> paikallinen skeema- ja tunnistetarkistus
+  -> version tarkistus ja yksi tietokantatransaktio
+  -> valmis vuorokuitti ja uudelleen muodostettavat tekstiviennit
+```
+
+**Proosa ei ole hahmojen yhteinen tietolähde.** Kertoja palauttaa erilliset tapahtumat ja niiden havaitsijat. Moottori muodostaa hahmolle vain kyseisen hahmon havaitsemat tapahtumat. Ohjaajan juoni, muiden ajatukset ja kaikkitietävä kerronta eivät mene suoraan hahmopromptiin.
+
+Muistihaku yhdistää viimeaikaisia muistoja vanhempiin paikkaan tai motiiviin sanallisesti liittyviin ja tärkeiksi merkittyihin muistoihin. Kertojalle ylläpidetään kumulatiivista tiivistelmää, pysyviä faktoja, avoimia juonilankoja ja seuraavia päätöksentekijöitä. Tämä on rajattu tekstimuisti, ei rajaton tai erehtymätön muistijärjestelmä.
+
+## Tallennus Ja Palautuminen
+
+- Tarinalla on oma SQLite-tietokanta `stories/<tunniste>/story.db`.
+- Hahmojen muutokset, havainnot, muistot, kohtaus, proosa, jatkuvuustila ja pyyntökuitti hyväksytään yhdessä transaktiossa.
+- Tilaversio estää vanhaan tilanteeseen perustuvaa generointia ylikirjoittamasta välissä tehtyä muokkausta.
+- Saman pyyntötunnisteen uudelleenlähetys palauttaa hyväksytyn vastauksen. Samaa tunnistetta ei saa käyttää eri sisällölle.
+- Selain seuraa palvelimen taustatyötä. Sivun lataus ei käynnistä uutta vuoroa. Keskeneräisen työn tunniste säilyy välilehden `sessionStorage`-tilassa.
+- Palvelimen uudelleenkäynnistys keskeyttää keskeneräiset työt. Valmiit kuitit säilyvät tietokannassa. **Palauta yhteys** käyttää samaa pyyntöä.
+- Katkennut tai virheellinen mallivastaus hylätään. Se ei muutu keksityksi varatarinaksi.
+- `story.txt` ja `story.md` ovat tietokannasta muodostettavia vientitiedostoja. Niihin käsin tehdyt muutokset eivät päivitä tarinan tilaa ja korvautuvat seuraavassa viennissä.
+
+Vanha tietokanta päivitetään avattaessa. Ennen version 4 migraatiota olemassa olevasta tietokannasta tehdään SQLite-varmuuskopio `story.pre-v4.db`. Säilytä lisäksi omat varmuuskopiot tärkeistä tarinoista. Älä käytä samaa tarinakansiota samanaikaisesti usealta koneelta pilvisynkronoinnin kautta.
+
+## Yksityisyys Ja Asetukset
+
+Tallennus on paikallinen, mutta pilvimallia käytettäessä sen saamat promptit, hahmotiedot ja tarinakatkelmat lähetetään valitulle palveluntarjoajalle. Sovellus ei siis ole automaattisesti kokonaan paikallinen tai offline.
+
+API-avaimet säilytetään palvelimen `.env`- ja `.provider-profiles.json`-tiedostoissa. Niitä ei palauteta asetusten GET-rajapinnasta eikä tallenneta uusiin selainprofiileihin. Vanhojen selainprofiilien avaimet siirretään palvelimelle ennen niiden poistamista selaintallennuksesta. Tiedostot ovat **salaamattomia** ja Gitin ulkopuolella; suojaa käyttäjätili, kansio ja varmuuskopiot asianmukaisesti.
+
+Sovellus on yhden omistajan paikallinen työkalu: ei kirjautumista, monikäyttäjyyttä tai internet-julkaisua varten. Palvelu hyväksyy localhost-isännät ja torjuu vieraasta selainalkuperästä tulevat pyynnöt. Tarina- ja prompttipolut on rajattu omiin hakemistoihinsa. Mallin ja tuontikorttien tekstiä ei suoriteta HTML:nä.
+
+Asetuksissa on yhteinen tarjoaja ja erilliset kertoja- ja hahmomallit. Koodi tukee xAI-, Azure-, OpenAI-, OpenRouter- ja OpenAI-yhteensopivia rajapintoja; nykyinen selainprofiilien näkymä kattaa xAI:n ja Azuren. Muita tarjoajia voi määrittää ympäristöasetuksilla. Mallikohtaiset rajapintaominaisuudet voivat vaihdella.
+
+API-loki sisältää syöte-, vastaus-, päättely- ja välimuistitokenit silloin, kun palvelu ilmoittaa ne. Välimuistitokenit ovat syötetokenien osajoukko. Hinta näytetään vain palvelun raportoimana, ja kooste ilmoittaa kuinka monesta kutsusta hintatieto on saatavilla. Puuttuva hinta ei tarkoita ilmaista kutsua.
+
+`MAX_INPUT_TOKENS` rajoittaa syötteen arvioitua kokoa (oletus 64000). Arvio on merkkimääräpohjainen, ei mallin tarkka tokenisaattori. Ylitys keskeyttää pyynnön ennen verkkokutsua eikä leikkaa sisältöä hiljaisesti.
+
+## Projektin Rakenne
+
+- `engine/story_engine.py`: tilakohtainen vuoroprosessi ja hyväksyminen.
+- `engine/director_agent.py`, `engine/character_agent.py`: agenttien syötteet ja validoidut vastaukset.
+- `database/turn_store.py`: vuorotransaktio, havainnot, jatkuvuus ja pyyntökuitit.
+- `database/db.py`: muut tietokantatoiminnot, muistihaku ja versionoidut migraatiot.
+- `core/schemas.py`: mallivastausten tietosopimukset.
+- `core/llm_client.py`, `core/providers/`: mallirajapinnat, vastaukset ja lokitus.
+- `core/profile_store.py`: palvelinpuolen avainprofiilit.
+- `web/api.py`: paikallinen API ja taustavuorotyöt.
+- `web/static/app.js`: tarina-, hahmo-, promptti- ja asetusnäkymät.
+- `web/static/turns.js`: vuoropyyntöjen seuranta, palautuminen ja keskeyttäminen.
+- `prompts/`: oletuspromptit; `prompts/custom/`: omat ohitukset.
+
+Vanhoja kronikoitsija-, aistisuodatin- ja valvojatoimintoja on edelleen lähdekoodissa yhteensopivuutta varten. Aktiivinen vuoropolku käyttää tapahtumia ja kertojan jatkuvuustilaa, ei erillistä kronikoitsija- tai valvojakutsua joka neljännellä tai kuudennella vuorolla. Vanhat API-tilanimet muunnetaan: `reader -> novel`, `player -> roleplay`, `director -> simulation`.
+
+## Testit
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Testit käyttävät väliaikaisia kansioita ja valemalleja, eivät käyttäjän tarinoita tai oikeita mallikutsuja. Ne kattavat muun muassa tietorajauksen, tilojen erot, pelaajan toiminnan, tallennuksen eheyden, uudelleenlähetyksen, muokkausristiriidat, muistinhaun, migraation, taustatyöt ja polkurajaukset.
+
+Käyttöliittymä on lisäksi tarkistettu selaimessa työpöytä- ja puhelinleveydellä, mukaan lukien luonti, pelaaminen, virhe, uudelleenlataus ja keskeytys. Kirjallisen laadun ja pitkien tarinoiden muistamisen arviointi edellyttää erillisiä oikeiden mallien kokeiluja.
+
+## Nykyiset Rajat
+
+Havaitsijoiden rajaus estää suoran yhteisen proosakontekstin vuodon. Kertoja on silti kielimalli: se voi kirjoittaa virheellisen havaintokuvauksen tai ristiriitaisen seurauksen. Skeematarkistus ei todista tapahtumien semanttista oikeellisuutta. Päätöskohtien ja kappaleiden rytmitys riippuu mallista ja prompteista.
+
+Vuorojen peruminen, tarinahaarat, proosan jälkieditointi, kuvien generointi ja usean palvelinprosessin työjono eivät kuulu tähän toteutukseen. Kuvituspromptteja voidaan edelleen tuottaa. Näitä ominaisuuksia kannattaa lisätä hyväksytyn tapahtuma- ja tilamallin päälle, ei ohittamalla sitä.

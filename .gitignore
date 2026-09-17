@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 *.key
+.provider-profiles.*
 
 # User Stories, SQLite Databases & Generated Prose
 stories/
@@ -11,6 +12,8 @@ stories/
 *.sqlite3
 *.txt
 !requirements.txt
+!prompts/**/*.txt
+prompts/custom/
 story.md
 
 # Python Virtual Environment & Bytecode

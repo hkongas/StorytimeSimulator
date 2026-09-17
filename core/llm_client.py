@@ -1,91 +1,87 @@
-import json
 import logging
-import re
-import httpx
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncIterator
 from config import settings
+from core.context_budget import context_budget
+from core.providers import (
+    LLMProvider,
+    TruncatedResponseError,
+    XAIProvider,
+    AzureProvider,
+    OpenAIProvider,
+    OpenRouterProvider,
+    CustomProvider
+)
+import database.db as db
 
 logger = logging.getLogger(__name__)
 
-# OpenAI-yhteensopivat palvelut eivät käytä kaikille malliperheille samoja kenttiä.
-# Uudet säännöt lisätään tähän, jotta agenttien kutsukoodi pysyy palveluriippumattomana.
-REQUEST_COMPATIBILITY = {
-    "default": {"token_parameter": "max_tokens"},
-    "azure_foundry_v1": {"token_parameter": "max_tokens"},
-    "azure_foundry_v1:gpt-5": {
-        "token_parameter": "max_completion_tokens",
-        "fixed_temperature": 1,
-    },
-}
-
-
-def request_compatibility(provider: str, base_url: str, model: str) -> Dict[str, Any]:
-    """Palauttaa palveluntarjoaja- ja malliperhekohtaiset request-kentät."""
-    normalized_base_url = base_url.rstrip("/").lower()
-    normalized_model = model.lower()
-
-    if provider == "azure" and normalized_base_url.endswith("/openai/v1"):
-        if normalized_model.startswith("gpt-5"):
-            return REQUEST_COMPATIBILITY["azure_foundry_v1:gpt-5"]
-        return REQUEST_COMPATIBILITY["azure_foundry_v1"]
-
-    return REQUEST_COMPATIBILITY["default"]
-
-
 class LLMClient:
-    """Asynkroninen LLM-asiakas, joka tukee xAI Grok-, Azure AI-, OpenAI- ja OpenRouter-rajapintoja."""
+    """Asynkroninen LLM-asiakasfasadi, joka hallitsee tarjoajainstanssit ja reitittää kutsut."""
 
     def __init__(
         self,
         provider: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        api_version: Optional[str] = None
+        api_version: Optional[str] = None,
+        deployment_name: Optional[str] = None,
+        story_id: Optional[str] = None
     ):
-        self.provider = (provider or settings.LLM_PROVIDER).lower()
+        self.provider_name = (provider or settings.LLM_PROVIDER).lower()
         self.api_key = api_key
         self.base_url = base_url
         self.api_version = api_version or settings.AZURE_OPENAI_API_VERSION
+        self.deployment_name = deployment_name or settings.AZURE_DEPLOYMENT_NAME
+        self.story_id = story_id
+        self._provider_instance: Optional[LLMProvider] = None
 
-        if not self.api_key:
-            if self.provider == "xai":
-                self.api_key = settings.XAI_API_KEY
-                self.base_url = self.base_url or "https://api.x.ai/v1"
-            elif self.provider == "azure":
-                self.api_key = settings.AZURE_OPENAI_API_KEY
-                self.base_url = self.base_url or settings.AZURE_OPENAI_ENDPOINT
-            elif self.provider == "openai":
-                self.api_key = settings.OPENAI_API_KEY
-                self.base_url = self.base_url or "https://api.openai.com/v1"
-            elif self.provider == "openrouter":
-                self.api_key = settings.OPENROUTER_API_KEY
-                self.base_url = self.base_url or "https://openrouter.ai/api/v1"
-            elif self.provider == "custom":
-                self.api_key = settings.CUSTOM_API_KEY
-                self.base_url = self.base_url or settings.CUSTOM_API_BASE
-            else:
-                self.api_key = settings.XAI_API_KEY
-                self.base_url = "https://api.x.ai/v1"
+    def _get_provider(self) -> LLMProvider:
+        """Luo tai palauttaa konfiguroidun LLMProvider-instanssin."""
+        if self._provider_instance:
+            return self._provider_instance
 
-    async def chat_completion(
+        p_name = self.provider_name
+        if p_name == "xai":
+            key = self.api_key or settings.XAI_API_KEY
+            url = self.base_url or "https://api.x.ai/v1"
+            self._provider_instance = XAIProvider(api_key=key, base_url=url)
+        elif p_name == "azure":
+            key = self.api_key or settings.AZURE_OPENAI_API_KEY
+            endpoint = self.base_url or settings.AZURE_OPENAI_ENDPOINT
+            ver = self.api_version or settings.AZURE_OPENAI_API_VERSION
+            dep = self.deployment_name or settings.AZURE_DEPLOYMENT_NAME
+            self._provider_instance = AzureProvider(api_key=key, endpoint=endpoint, api_version=ver, deployment_name=dep)
+        elif p_name == "openai":
+            key = self.api_key or settings.OPENAI_API_KEY
+            url = self.base_url or "https://api.openai.com/v1"
+            self._provider_instance = OpenAIProvider(api_key=key, base_url=url)
+        elif p_name == "openrouter":
+            key = self.api_key or settings.OPENROUTER_API_KEY
+            url = self.base_url or "https://openrouter.ai/api/v1"
+            self._provider_instance = OpenRouterProvider(api_key=key, base_url=url)
+        elif p_name == "custom":
+            key = self.api_key or settings.CUSTOM_API_KEY
+            url = self.base_url or settings.CUSTOM_API_BASE
+            self._provider_instance = CustomProvider(base_url=url, api_key=key)
+        else:
+            key = self.api_key or settings.XAI_API_KEY
+            self._provider_instance = XAIProvider(api_key=key)
+
+        return self._provider_instance
+
+    def _check_context(self, messages: List[Dict[str, str]]):
+        if context_budget.calculate_messages_tokens(messages) > settings.MAX_INPUT_TOKENS:
+            raise ValueError("Tarinan syöte ylittää asetetun kontekstibudjetin. Tiivistä maailman tietoja tai promptteja.")
+
+    def _resolve_params(
         self,
-        messages: List[Dict[str, str]],
+        role: str,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        reasoning_effort: Optional[str] = None,
-        response_format: Optional[Dict[str, Any]] = None,
-        timeout: float = 120.0,
-        role: str = "director"  # "director" tai "character"
-    ) -> str:
-        """Suorittaa chat completion -kutsun LLM:lle."""
-        if not self.api_key:
-            raise ValueError(
-                f"API-avain puuttuu palveluntarjoajalle '{self.provider}'. "
-                "Aseta API-avain .env-tiedostoon tai käyttöliittymän asetuksissa."
-            )
-
-        # Määritetään oletusmallit ja -parametrit roolin mukaan
+        reasoning_effort: Optional[str] = None
+    ) -> tuple[str, float, int, Optional[str]]:
+        """Määrittää mallin, lämpötilan ja token-rajat roolin perusteella."""
         if role == "character":
             target_model = model or settings.CHARACTER_MODEL
             target_temp = temperature if temperature is not None else settings.CHARACTER_TEMPERATURE
@@ -98,80 +94,75 @@ class LLMClient:
             target_reasoning = reasoning_effort or settings.DIRECTOR_REASONING_EFFORT
 
         if not target_model:
-            target_model = "grok-2-latest" if self.provider == "xai" else "gpt-4o"
+            target_model = "grok-2-latest" if self.provider_name == "xai" else "gpt-4o"
 
-        # Päätepisteen ja otsakkeiden rakennus
-        headers: Dict[str, str] = {
-            "Content-Type": "application/json",
-        }
+        return target_model, target_temp, target_tokens, target_reasoning
 
-        if self.provider == "azure":
-            clean_base = (self.base_url or "").rstrip("/")
-            azure_foundry_v1 = clean_base.lower().endswith("/openai/v1")
-            if azure_foundry_v1:
-                endpoint = f"{clean_base}/chat/completions"
-                headers["api-key"] = self.api_key
-            else:
-                deployment = settings.AZURE_DEPLOYMENT_NAME or target_model
-                endpoint = f"{clean_base}/openai/deployments/{deployment}/chat/completions?api-version={self.api_version}"
-                headers["api-key"] = self.api_key
-        else:
-            endpoint = f"{self.base_url.rstrip('/')}/chat/completions"
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        if self.provider == "openrouter":
-            headers["HTTP-Referer"] = "https://storytimesimulator.local"
-            headers["X-Title"] = "StorytimeSimulator"
-
-        compatibility = request_compatibility(self.provider, self.base_url or "", target_model)
-        target_temp = compatibility.get("fixed_temperature", target_temp)
-        payload: Dict[str, Any] = {
-            "messages": messages,
-            "temperature": target_temp,
-        }
-        if self.provider != "azure" or azure_foundry_v1:
-            payload["model"] = target_model
-
-        if target_tokens:
-            payload[compatibility["token_parameter"]] = target_tokens
-
-        # Reasoning effort -tuki (jos valittu low, medium, high)
-        if target_reasoning and target_reasoning.lower() in ["low", "medium", "high"]:
-            payload["reasoning_effort"] = target_reasoning.lower()
-
-        if response_format:
-            payload["response_format"] = response_format
-
-        logger.info(
-            "LLM request: provider=%s endpoint=%s model=%s deployment=%s token_parameter=%s temperature=%s fields=%s",
-            self.provider,
-            endpoint,
-            target_model if "model" in payload else "(not sent)",
-            settings.AZURE_DEPLOYMENT_NAME or target_model if self.provider == "azure" else "-",
-            compatibility["token_parameter"],
-            target_temp,
-            ", ".join(payload.keys()),
+    async def chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        timeout: float = 120.0,
+        role: str = "director",
+        story_id: Optional[str] = None
+    ) -> str:
+        """Suorittaa chat completion -kutsun aktiiviselle providerille ja lokittaa käytön."""
+        self._check_context(messages)
+        provider = self._get_provider()
+        provider.last_usage = {}
+        target_model, target_temp, target_tokens, target_reasoning = self._resolve_params(
+            role=role, model=model, temperature=temperature, max_tokens=max_tokens, reasoning_effort=reasoning_effort
         )
-
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(endpoint, headers=headers, json=payload)
-            
-            if response.status_code != 200:
-                # Jos reasoning_effort aiheuttaa virheen perinteisellä mallilla, yritetään ilman sitä
-                if "reasoning_effort" in payload and response.status_code in [400, 422]:
-                    payload.pop("reasoning_effort", None)
-                    response = await client.post(endpoint, headers=headers, json=payload)
-
-            if response.status_code != 200:
-                request_context = (
-                    f" Palveluntarjoaja: {self.provider}. Endpoint: {endpoint}. "
-                    f"Malli: {target_model}."
+        sid = story_id or self.story_id
+        try:
+            content = await provider.chat_completion(
+                messages=messages,
+                model=target_model,
+                temperature=target_temp,
+                max_tokens=target_tokens,
+                reasoning_effort=target_reasoning,
+                response_format=response_format,
+                timeout=timeout
+            )
+            if sid:
+                u = getattr(provider, "last_usage", {})
+                await db.log_api_call(
+                    story_id=sid,
+                    role=role,
+                    model=u.get("model", target_model),
+                    duration_seconds=u.get("duration_seconds", 0.0),
+                    prompt_tokens=u.get("prompt_tokens", 0),
+                    completion_tokens=u.get("completion_tokens", 0),
+                    reasoning_tokens=u.get("reasoning_tokens", 0),
+                    total_tokens=u.get("total_tokens", 0),
+                    cost_usd=u.get("cost_usd", 0.0),
+                    cached_tokens=u.get("cached_tokens", 0),
+                    cost_known=u.get("cost_known", False),
+                    status=u.get("status", "success"),
+                    error_message=""
                 )
-                error_msg = f"LLM API Virhe ({response.status_code}): {response.text}{request_context}"
-                raise RuntimeError(error_msg)
-
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
+            return content
+        except Exception as e:
+            if sid:
+                u = getattr(provider, "last_usage", {})
+                await db.log_api_call(
+                    story_id=sid,
+                    role=role,
+                    model=u.get("model", target_model),
+                    duration_seconds=u.get("duration_seconds", 0.0),
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    reasoning_tokens=0,
+                    total_tokens=0,
+                    cost_usd=0.0,
+                    status="error",
+                    error_message=str(e)[:500]
+                )
+            raise
 
     async def json_completion(
         self,
@@ -180,45 +171,130 @@ class LLMClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
-        role: str = "director"
+        timeout: float = 180.0,
+        role: str = "director",
+        json_schema: Optional[Dict[str, Any]] = None,
+        story_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Kutsuu LLM:ää ja parsii vastauksen JSON-objektiksi."""
-        raw_text = await self.chat_completion(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            reasoning_effort=reasoning_effort,
-            role=role,
-            response_format={"type": "json_object"} if self.provider in ["openai", "azure", "openrouter"] else None
+        """Kutsuu LLM:ää ja jäsentää vastauksen JSON-objektiksi automaattisella katkeamisen uusintayrityksellä."""
+        self._check_context(messages)
+        provider = self._get_provider()
+        provider.last_usage = {}
+        target_model, target_temp, target_tokens, target_reasoning = self._resolve_params(
+            role=role, model=model, temperature=temperature, max_tokens=max_tokens, reasoning_effort=reasoning_effort
         )
-        return self._extract_json(raw_text)
+        sid = story_id or self.story_id
 
-    def _extract_json(self, text: str) -> Dict[str, Any]:
-        """Poimii ja parsii JSON-sisällön tekstistä tai koodilohkosta."""
-        text = text.strip()
-        
-        # 1. Suora JSON-yritys
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
+        logger.info(
+            f"LLM JSON-kutsu ({role}): provider={self.provider_name}, model={target_model}, "
+            f"max_tokens={target_tokens}, temp={target_temp}, schema={'yes' if json_schema else 'no'}"
+        )
 
-        # 2. Markdown ```json ... ``` lohkon etsintä
-        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-        if match:
+        # Ensimmäinen yritys ja mahdollinen korotetun token-määrän uusintayritys
+        attempts = 2
+        current_max_tokens = target_tokens
+
+        for attempt in range(1, attempts + 1):
             try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                pass
+                res = await provider.json_completion(
+                    messages=messages,
+                    model=target_model,
+                    temperature=target_temp,
+                    max_tokens=current_max_tokens,
+                    reasoning_effort=target_reasoning,
+                    timeout=timeout,
+                    json_schema=json_schema
+                )
+                if sid:
+                    u = getattr(provider, "last_usage", {})
+                    await db.log_api_call(
+                        story_id=sid,
+                        role=role,
+                        model=u.get("model", target_model),
+                        duration_seconds=u.get("duration_seconds", 0.0),
+                        prompt_tokens=u.get("prompt_tokens", 0),
+                        completion_tokens=u.get("completion_tokens", 0),
+                        reasoning_tokens=u.get("reasoning_tokens", 0),
+                        total_tokens=u.get("total_tokens", 0),
+                        cost_usd=u.get("cost_usd", 0.0),
+                        cached_tokens=u.get("cached_tokens", 0),
+                        cost_known=u.get("cost_known", False),
+                        status=u.get("status", "success"),
+                        error_message=""
+                    )
+                return res
+            except TruncatedResponseError as tre:
+                logger.warning(
+                    f"LLM-vastaus katkesi kesken (yritys {attempt}/{attempts}, max_tokens={current_max_tokens}): {tre}"
+                )
+                if sid:
+                    u = getattr(provider, "last_usage", {})
+                    await db.log_api_call(
+                        story_id=sid,
+                        role=role,
+                        model=u.get("model", target_model),
+                        duration_seconds=u.get("duration_seconds", 0.0),
+                        prompt_tokens=u.get("prompt_tokens", 0),
+                        completion_tokens=u.get("completion_tokens", 0),
+                        reasoning_tokens=u.get("reasoning_tokens", 0),
+                        total_tokens=u.get("total_tokens", 0),
+                        cost_usd=u.get("cost_usd", 0.0),
+                        status="truncated",
+                        cached_tokens=u.get("cached_tokens", 0),
+                        cost_known=u.get("cost_known", False),
+                        error_message=str(tre)[:500]
+                    )
+                if attempt < attempts:
+                    # Korotetaan token-budjettia merkittävästi toiselle yritykselle
+                    current_max_tokens = max(current_max_tokens * 2, 8000)
+                    logger.info(f"Yritetään uudelleen korotetulla token-rajalla: {current_max_tokens}...")
+                    continue
+                
+                raise RuntimeError(
+                    f"Tekoälymallin ({target_model}) vastaus katkesi kahdesti liian pienen token-rajan vuoksi. "
+                    f"Kokeile kasvattaa 'Ohjaajan max tokens' -asetusta asetuspaneelista."
+                ) from tre
+            except ValueError as ve:
+                logger.error(f"JSON-parsintavirhe LLM-vastauksesta: {ve}")
+                if sid:
+                    usage = provider.last_usage
+                    await db.log_api_call(sid, role, target_model, usage.get("duration_seconds", 0.0),
+                        prompt_tokens=usage.get("prompt_tokens", 0), completion_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0), cached_tokens=usage.get("cached_tokens", 0),
+                        status="error", error_message=str(ve)[:500])
+                if attempt < attempts:
+                    logger.info("Yritetään uudelleen JSON-kutsulla...")
+                    continue
+                raise
 
-        # 3. Ensimmäisen { ja viimeisen } välinen sisältö
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                pass
+            except Exception as error:
+                if sid:
+                    await db.log_api_call(sid, role, target_model, provider.last_usage.get("duration_seconds", 0.0),
+                                          status="error", error_message=str(error)[:500])
+                raise
 
-        raise ValueError(f"Ei voitu jäsentää kelvollista JSON-vastausta:\n{text[:500]}...")
+    async def stream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        timeout: float = 120.0,
+        role: str = "director"
+    ) -> AsyncIterator[str]:
+        """Striimaa vastaustokenit generaattorina."""
+        self._check_context(messages)
+        provider = self._get_provider()
+        target_model, target_temp, target_tokens, target_reasoning = self._resolve_params(
+            role=role, model=model, temperature=temperature, max_tokens=max_tokens, reasoning_effort=reasoning_effort
+        )
+        async for token in provider.stream_completion(
+            messages=messages,
+            model=target_model,
+            temperature=target_temp,
+            max_tokens=target_tokens,
+            reasoning_effort=target_reasoning,
+            timeout=timeout
+        ):
+            yield token

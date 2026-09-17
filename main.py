@@ -12,7 +12,7 @@ def main():
         "web.api:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=True,
+        reload=False,
         log_level="info",
     )
 
