@@ -1,5 +1,9 @@
 # Tarinamoottori / StorytimeSimulator
 
+[English version](README.en.md)
+
+> **Keskeneräinen projekti:** tätä sovellusta kehitetään edelleen. Sitä ei ole laajasti tai riippumattomasti testattu, eikä sitä ole validoitu tuotantokäyttöön. Mukana olevat automaattitestit ja rajalliset kehitysaikaiset selainkokeilut eivät takaa virheetöntä toimintaa.
+
 Paikallisesti tallentava, selainkäyttöinen tarinamoottori. Sama tarina voi jatkua romaanina, itsenäisten hahmojen simulaationa tai yhden hahmon roolipelinä. Maailmaan voi puuttua missä tahansa tilassa.
 
 ## Käynnistys
@@ -102,9 +106,9 @@ Vanhoja kronikoitsija-, aistisuodatin- ja valvojatoimintoja on edelleen lähdeko
 python -m unittest discover -s tests -v
 ```
 
-Testit käyttävät väliaikaisia kansioita ja valemalleja, eivät käyttäjän tarinoita tai oikeita mallikutsuja. Ne kattavat muun muassa tietorajauksen, tilojen erot, pelaajan toiminnan, tallennuksen eheyden, uudelleenlähetyksen, muokkausristiriidat, muistinhaun, migraation, taustatyöt ja polkurajaukset.
+Testit käyttävät väliaikaisia kansioita ja valemalleja, eivät käyttäjän tarinoita tai oikeita mallikutsuja. Ne kattavat muun muassa tietorajauksen, tilojen erot, pelaajan toiminnan, tallennuksen eheyden, uudelleenlähetyksen, muokkausristiriidat, muistinhaun, migraation, taustatyöt ja polkurajaukset. Testit ovat rajallisia eivätkä kata kaikkia käyttötilanteita.
 
-Käyttöliittymä on lisäksi tarkistettu selaimessa työpöytä- ja puhelinleveydellä, mukaan lukien luonti, pelaaminen, virhe, uudelleenlataus ja keskeytys. Kirjallisen laadun ja pitkien tarinoiden muistamisen arviointi edellyttää erillisiä oikeiden mallien kokeiluja.
+Käyttöliittymää on kokeiltu kehitystyön yhteydessä työpöytä- ja puhelinleveydellä, mutta kattavaa selain- tai käyttäjätestausta ei ole tehty. Kirjallisen laadun ja pitkien tarinoiden muistamisen arviointi edellyttää erillisiä oikeiden mallien kokeiluja.
 
 ## Nykyiset Rajat
 
