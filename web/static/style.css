@@ -662,6 +662,23 @@ h1, h2, h3, h4, h5, h6,
   box-shadow: 0 0 0 2px var(--color-primary-subtle);
 }
 
+.story-composer {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  max-height: 24dvh;
+}
+
+.styled-textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+#authoredChanges { overflow-wrap: anywhere; }
+#authoredChanges h4 { margin: 16px 0 6px; }
+#authoredChanges ul { padding-left: 22px; }
+#authoredTurnModal .modal-footer { flex-wrap: wrap; }
+
 .btn-action {
   padding: 10px 20px;
   white-space: nowrap;

@@ -43,6 +43,7 @@ document.addEventListener("DOMContentLoaded", () => {
     modal.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
         if (modal.id === 'settingsModal') closeSettingsModal();
+        else if (modal.id === 'authoredTurnModal') closeAuthoredTurn();
         else modal.classList.add('hidden');
       }
       if (event.key === 'Tab') {
@@ -63,10 +64,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Enter-painikkeen tuki syötekentissä
   document.getElementById("readerInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") advanceStory();
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+      e.preventDefault();
+      advanceStory();
+    }
   });
   document.getElementById("playerInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") advanceStory();
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+      e.preventDefault();
+      advanceStory();
+    }
   });
   document.getElementById("directorInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") advanceStory();
@@ -184,6 +191,7 @@ async function loadStoryList() {
 
 async function loadStory(storyId) {
   if (!storyId) return;
+  if (authoredTurn) return;
   const preserveReadingPosition = storyId === currentStoryId && Boolean(currentStoryData);
   if (editorSaving) return;
   if (activeTurnEditor) {

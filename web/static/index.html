@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=20260930">
+  <link rel="stylesheet" href="/static/style.css?v=20260930-authored1">
   <script src="/static/i18n.js?v=20260930-azure3"></script>
 </head>
 <body class="theme-dark">
@@ -176,7 +176,7 @@
           <div class="action-bar" id="actionBar">
             <!-- Lukijatilan syöte -->
             <div id="readerControls" class="control-group">
-              <input type="text" id="readerInput" class="styled-input" data-i18n-placeholder="readerPlaceholder" placeholder="Valinnainen toive tai käänne (esim. 'Yllättävä koputus ovelle')...">
+              <textarea id="readerInput" class="styled-textarea story-composer" rows="3" aria-label="Tarinan jatkon luonnos tai toive" data-i18n-placeholder="readerPlaceholder" placeholder="Valinnainen toive tai käänne (esim. 'Yllättävä koputus ovelle')..."></textarea>
               <button id="advanceBtn" class="btn btn-primary btn-action" onclick="advanceStory()">
                 <span data-i18n="readerAdvanceBtn">Jatka tarinaa</span>
               </button>
@@ -184,7 +184,7 @@
 
             <!-- Pelaajatilan syöte -->
             <div id="playerControls" class="control-group hidden">
-              <input type="text" id="playerInput" class="styled-input" data-i18n-placeholder="playerPlaceholder" placeholder="Mitä teet tai sanot? (esim. 'Nostan katseeni ja kysyn: Kuka olet?')">
+              <textarea id="playerInput" class="styled-textarea story-composer" rows="3" aria-label="Pelaajahahmon toiminta ja puhe" data-i18n-placeholder="playerPlaceholder" placeholder="Mitä teet tai sanot? (esim. 'Nostan katseeni ja kysyn: Kuka olet?')"></textarea>
               <button id="playerActBtn" class="btn btn-primary btn-action" onclick="advanceStory()">
                 <span data-i18n="playerActBtn">Toimi</span>
               </button>
@@ -193,6 +193,7 @@
             <!-- Ohjaajatilan syöte -->
           </div>
           <div class="composer-options">
+            <button id="authoredTurnBtn" class="btn btn-secondary btn-sm" onclick="openAuthoredTurn()" title="Kirjoita oma valmis jatko tarinaan">Oma jatkokappale</button>
             <details id="privateIntentionGroup" class="hidden">
               <summary data-i18n="privateIntention">Yksityinen aikomus</summary>
               <textarea id="privateIntention" class="styled-textarea" rows="3" maxlength="4000" aria-label="Pelaajahahmon yksityinen aikomus" placeholder="Mitä hahmosi tavoittelee tai jättää sanomatta?"></textarea>
@@ -712,6 +713,29 @@
     </div>
   </div>
 
+  <div id="authoredTurnModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2>Oma jatkokappale</h2>
+        <button class="modal-close" onclick="closeAuthoredTurn()">✕</button>
+      </div>
+      <div class="modal-body">
+        <label for="authoredProse">Valmis teksti</label>
+        <textarea id="authoredProse" class="styled-textarea" rows="10" maxlength="20000"></textarea>
+        <p id="authoredStatus" role="status"></p>
+        <div id="authoredPreview" class="hidden">
+          <h3>Hyväksyttävät muutokset</h3>
+          <div id="authoredChanges"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="authoredCancelBtn" class="btn btn-secondary" onclick="closeAuthoredTurn()">Peruuta</button>
+        <button id="authoredAnalyzeBtn" class="btn btn-primary" onclick="analyzeAuthoredTurn()" title="Analysoi tapahtumat ja tilamuutokset valitulla kertojamallilla. Kutsu voi olla maksullinen.">Analysoi muutokset</button>
+        <button id="authoredAcceptBtn" class="btn btn-primary hidden" onclick="acceptAuthoredTurn()">Hyväksy ja tallenna</button>
+      </div>
+    </div>
+  </div>
+
   <!-- API & Token Lokitiedot Modali -->
   <div id="debugLogsModal" class="modal-backdrop hidden">
     <div class="modal-card modal-lg">
@@ -752,7 +776,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260930-scroll1"></script>
-  <script src="/static/turns.js?v=20260930"></script>
+  <script src="/static/app.js?v=20260930-authored2"></script>
+  <script src="/static/turns.js?v=20260930-authored2"></script>
 </body>
 </html>

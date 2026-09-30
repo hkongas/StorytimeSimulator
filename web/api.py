@@ -201,6 +201,38 @@ class TurnUndoRequest(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+class AuthoredPreviewRequest(BaseModel):
+    prose: str = Field(min_length=1, max_length=20000)
+    expected_revision: int = Field(ge=0)
+
+
+class AuthoredAcceptRequest(BaseModel):
+    preview_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+@app.post("/api/stories/{story_id}/authored-turns/preview")
+async def preview_authored_turn(story_id: str, req: AuthoredPreviewRequest):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    return await engine.preview_authored_turn(story_id, req.prose, req.expected_revision)
+
+
+@app.post("/api/stories/{story_id}/authored-turns/accept")
+async def accept_authored_turn(story_id: str, req: AuthoredAcceptRequest):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    response = await engine.accept_authored_turn(story_id, req.preview_id)
+    return {"status": "success", "data": response.model_dump()}
+
+
+@app.delete("/api/stories/{story_id}/authored-turns/previews/{preview_id}")
+async def discard_authored_preview(story_id: str, preview_id: str):
+    preview = engine.authored_previews.get(preview_id)
+    if preview and preview["story_id"] == story_id:
+        engine.authored_previews.pop(preview_id, None)
+    return {"status": "success"}
+
+
 @app.put("/api/stories/{story_id}/turns/{turn_id}")
 async def edit_turn(story_id: str, turn_id: int, req: TurnProseUpdate):
     if not await db.get_story_meta(story_id):

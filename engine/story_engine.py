@@ -2,12 +2,13 @@ import asyncio
 import hashlib
 import json
 import shutil
+import time
 from typing import Any, AsyncIterator, Optional
 from uuid import uuid4
 
 from config import settings
 from core.llm_client import LLMClient
-from core.schemas import ProseTurnResponse
+from core.schemas import ProseTurnResponse, pydantic_to_json_schema
 from core.prompt_loader import prompt_loader
 from core.types import Character, SceneTurn, StoryInitRequest, TurnResponse, normalize_mode
 from database import db, turn_store
@@ -23,11 +24,110 @@ class StoryEngine:
         self.chronicle = ChronicleManager(self.llm)
         self._locks: dict[str, asyncio.Lock] = {}
         self.max_concurrent_characters = 5
+        self.authored_previews: dict[str, dict[str, Any]] = {}
 
     def is_busy(self, story_id: str | None = None) -> bool:
         if story_id is None:
             return any(lock.locked() for lock in self._locks.values())
         return story_id in self._locks and self._locks[story_id].locked()
+
+    async def preview_authored_turn(self, story_id: str, prose: str, expected_revision: int) -> dict[str, Any]:
+        async with self._locks.setdefault(story_id, asyncio.Lock()):
+            revision = await turn_store.get_revision(story_id)
+            if revision != expected_revision:
+                raise turn_store.TurnConflictError("Tarina muuttui. Lataa se uudelleen ennen esikatselua.")
+            meta = await db.get_story_meta(story_id)
+            scene = await db.get_active_scene(story_id)
+            if not meta or not scene or scene.id is None:
+                raise ValueError("Tarinalta puuttuu aktiivinen kohtaus.")
+            if not prose.strip() or len(prose) > 20000:
+                raise ValueError("Oman jatkon pituuden on oltava 1–20 000 merkkiä.")
+            characters = await db.get_all_characters(story_id)
+            runtime = await turn_store.get_runtime(story_id)
+            turns = await db.get_all_story_turns(story_id)
+            system = prompt_loader.compose_system_prompt(
+                "director/reconcile_authored", tone_profile=meta.tone_profile,
+                custom_tone_override=meta.custom_tone_override
+            )
+            raw = await self.llm.json_completion(
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps({
+                    "world_lore": meta.world_lore, "scene": scene.model_dump(), "continuity": runtime,
+                    "characters": [character.model_dump() for character in characters],
+                    "preceding_prose": "\n\n".join(turn.director_prose for turn in turns[-3:])[-12000:],
+                    "authored_prose": prose
+                }, ensure_ascii=False)}], role="director", story_id=story_id,
+                json_schema=pydantic_to_json_schema(ProseTurnResponse, "authored_reconciliation")
+            )
+            outcome = ProseTurnResponse.model_validate(raw)
+            outcome.prose = prose
+            outcome.choices = []
+            outcome.image_prompt = ""
+            roster = {character.id: character for character in characters}
+            if outcome.spawned_characters:
+                raise ValueError("Oman jatkon synkronointi ei vielä luo uusia hahmoja. Lisää hahmot ensin tarinaan.")
+            for event in outcome.events:
+                if not set(event.witnesses) <= roster.keys():
+                    raise ValueError("Havainto viittaa tuntemattomaan hahmoon.")
+            seen_updates = set()
+            for update in outcome.character_state_updates:
+                if update.character_id not in roster or update.character_id in seen_updates:
+                    raise ValueError("Tilapäivityksessä on tuntematon tai toistuva hahmo.")
+                seen_updates.add(update.character_id)
+                for field in ("physical_state", "mental_state", "status"):
+                    value = getattr(update, field)
+                    if value is not None:
+                        setattr(roster[update.character_id], field, value)
+            if outcome.active_character_ids is None:
+                outcome.active_character_ids = list(scene.active_character_ids)
+            if not set(outcome.active_character_ids) <= roster.keys() or not set(outcome.decision_character_ids) <= roster.keys():
+                raise ValueError("Jatko viittaa tuntemattomaan päätöksentekijään tai läsnäolijaan.")
+            if revision != await turn_store.get_revision(story_id):
+                raise turn_store.TurnConflictError("Tarina muuttui analyysin aikana. Muutoksia ei tallennettu.")
+            now = time.monotonic()
+            self.authored_previews = {identifier: preview for identifier, preview in self.authored_previews.items()
+                                     if preview["expires"] > now and preview["story_id"] != story_id}
+            if len(self.authored_previews) >= 100:
+                raise ValueError("Liikaa avoimia esikatseluja. Sulje aiemmat esikatselut.")
+            identifier = uuid4().hex
+            self.authored_previews[identifier] = {
+                "story_id": story_id, "revision": revision, "expires": now + 1800,
+                "outcome": outcome, "characters": list(roster.values()), "scene": scene,
+                "last_id": max((turn.id or 0 for turn in turns), default=0),
+                "turn_index": max((turn.turn_index for turn in turns), default=0) + 1,
+                "mode": runtime.get("mode", "novel")
+            }
+            return {"preview_id": identifier, "revision": revision, "prose": prose,
+                    "events": [event.model_dump() for event in outcome.events],
+                    "character_updates": [update.model_dump() for update in outcome.character_state_updates],
+                    "summary": outcome.summary, "world_facts": outcome.world_facts,
+                    "plot_threads": outcome.plot_threads, "decision_character_ids": outcome.decision_character_ids,
+                    "active_character_ids": outcome.active_character_ids, "scene_location": outcome.scene_location,
+                    "scene_goal": outcome.scene_goal, "chapter_end": outcome.chapter_end}
+
+    async def accept_authored_turn(self, story_id: str, preview_id: str) -> TurnResponse:
+        async with self._locks.setdefault(story_id, asyncio.Lock()):
+            request_id = "authored_" + preview_id
+            receipt = await turn_store.get_receipt(story_id, request_id)
+            if receipt:
+                return receipt
+            preview = self.authored_previews.get(preview_id)
+            if not preview or preview["story_id"] != story_id or preview["expires"] <= time.monotonic():
+                raise turn_store.TurnConflictError("Esikatselu vanheni tai palvelin käynnistyi uudelleen. Analysoi teksti uudelleen.")
+            outcome = preview["outcome"]
+            response = TurnResponse(turn_index=preview["turn_index"], mode=preview["mode"], request_id=request_id,
+                                    director_prose=outcome.prose, story_text_snippet=outcome.prose,
+                                    updated_characters=preview["characters"], is_chapter_end=outcome.chapter_end)
+            turn = SceneTurn(scene_id=preview["scene"].id, turn_index=preview["turn_index"],
+                             director_prose=outcome.prose, character_action="Käyttäjän kirjoittama jatko")
+            await turn_store.commit_turn(story_id, preview["last_id"], turn, preview["characters"], outcome, response,
+                                         hashlib.sha256(outcome.prose.encode()).hexdigest(),
+                                         {"source": "authored", "preview_id": preview_id}, expected_revision=preview["revision"])
+            self.authored_previews.pop(preview_id, None)
+            try:
+                await turn_store.rebuild_exports(story_id)
+            except OSError:
+                response.warnings.append("Jatko tallennettiin, mutta tekstivienti epäonnistui.")
+            return response
 
     async def initialize_new_story(self, request: StoryInitRequest) -> dict[str, Any]:
         raw_id = request.title.lower().strip()

@@ -47,6 +47,10 @@ Vuoron kynäpainike avaa tekstieditorin. **Tallenna vain teksti** päivittää p
 
 **Tekstimuokkaus ei muuta tapahtumia, havaintoja, muisteja tai jatkuvuustiivistelmää.** Käytä sitä oikolukuun ja tyyliin. Juonimuutosten automaattista tilasynkronointia ei vielä ole; `sync_state: true` hylätään tallentamatta tekstiä. Myös vanhoja kappaleita voi korjata tekstinä, mutta muutokset eivät kirjoita myöhempien vuorojen tilaa uudelleen.
 
+**Oma jatkokappale** lisää uuden, sellaisenaan säilytettävän tekstin tarinan loppuun. **Analysoi muutokset** käyttää kertojamallia ehdottamaan tapahtumat, niiden havaitsijat, hahmotilat ja jatkuvuuden. Tarkista ehdotus ja valitse **Hyväksy ja tallenna**; hyväksyntä ei tee uutta mallikutsua. Ennen hyväksyntää tarinan tila ei muutu. Peruuttaminen säilyttää tekstin lomakkeessa mutta hylkää esikatselun. Esikatselu vanhenee 30 minuutissa tai palvelimen uudelleenkäynnistyksessä; välissä muuttunut tarina vaatii uuden analyysin. Hyväksytty kappale voidaan kumota kuten uusi generoitu vuoro. Kappaleen enimmäispituus on 20 000 merkkiä. Tämä ensimmäinen versio ei luo uusia hahmoja: lisää tarvittavat hahmot ennen analyysiä.
+
+Tapahtumien ja havaitsijoiden semanttinen oikeellisuus on edelleen mallin ehdotus, jonka käyttäjä tarkistaa. Tuntemattomat hahmotunnisteet hylätään. Vanhojen kappaleiden sisällöllinen sovitus ei kuulu tähän toimintoon. Tavallinen monirivinen jatkosyöte on eri asia: se antaa kertojalle muotoiltavan luonnoksen tai toiveen. Generoinnin aikana vuoron syöttökentät lukitaan; epäonnistuminen tai keskeytys ei tyhjennä tekstiä.
+
 Kumoamispainike palauttaa viimeisintä vuoroa edeltäneet hahmot, muistit, havainnot, kohtaukset ja jatkuvuustilan. Se toimii vain uusille vuoroille, joille tämä versio tallensi palautuspisteen. Aloitusta ja vanhoja vuoroja ei voi kumota. Myöhemmät erilliset tilamuutokset estävät kumoamisen; tekstikorjaukset eivät. Mallikuluja ei hyvitetä. Uusi jatko käyttää uutta pyyntötunnistetta. Editorin avaaminen tai kumoaminen pysäyttää automaattijatkon.
 
 ## Vuoron Tietovirta

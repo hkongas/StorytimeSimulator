@@ -67,6 +67,14 @@ class MockLLMClient(LLMClient):
                     "opening_prose": "Yön hiljaisuus laskeutui metsän ylle kuin raskas samettiverho. Eerik seisoi raunioiden kynnyksellä ja katseli sumun halki kohoavia torneja."
                 }
             }
+        elif schema_name == "authored_reconciliation":
+            return {
+                "prose": "Model must not replace user prose", "summary": "A bell rang.",
+                "events": [{"description": "A bell rings.", "witnesses": ["char_eerik"]}],
+                "world_facts": ["The bell has rung."], "plot_threads": [], "decision_character_ids": ["char_eerik"],
+                "active_character_ids": ["char_eerik", "char_mira"],
+                "character_state_updates": [{"character_id": "char_eerik", "mental_state": "Alert"}]
+            }
         elif role == "character":
             return {
                 "internal_monologue": "Mietin, kuka toinen liikkuu raunioilla näin myöhään...",
@@ -317,7 +325,7 @@ class RecordingLLM(MockLLMClient):
     async def json_completion(self, messages, role="director", **kwargs):
         self.calls.append((role, messages))
         result = await super().json_completion(messages, role=role, **kwargs)
-        if "prose" in result:
+        if "prose" in result and kwargs.get("json_schema", {}).get("json_schema", {}).get("name") != "authored_reconciliation":
             if self.invalid:
                 result["events"] = [{"description": "Invalid witness", "witnesses": ["absent"]}]
             result["character_state_updates"] = [{"character_id": "char_mira", "status": "unconscious"}]
@@ -491,6 +499,50 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await cursor.fetchone())[0], 5)
             await connection.execute("SELECT * FROM turn_snapshots")
         self.assertEqual((await db.get_story_meta("test")).title, "Original")
+
+    async def test_authored_preview_acceptance_and_undo(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        revision = await turn_store.get_revision(story_id)
+        prose = "  The bell rang.\n\nEerik listened.  "
+        preview = await engine.preview_authored_turn(story_id, prose, revision)
+        self.assertEqual(await turn_store.get_revision(story_id), revision)
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 1)
+        self.assertEqual(await db.get_character_memories(story_id, "char_eerik"), [])
+        response = await engine.accept_authored_turn(story_id, preview["preview_id"])
+        self.assertEqual(response.director_prose, prose)
+        self.assertEqual((await db.get_character(story_id, "char_eerik")).mental_state, "Alert")
+        self.assertEqual(await turn_store.get_observation(story_id, "char_eerik"), "A bell rings.")
+        self.assertNotIn("bell", await turn_store.get_observation(story_id, "char_mira"))
+        self.assertEqual((await engine.accept_authored_turn(story_id, preview["preview_id"])).request_id, response.request_id)
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 2)
+        await turn_store.rollback_last_turn(story_id, await turn_store.get_revision(story_id))
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 1)
+        self.assertEqual(await db.get_character_memories(story_id, "char_eerik"), [])
+
+    async def test_authored_preview_rejects_stale_acceptance(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        preview = await engine.preview_authored_turn(story_id, "A bell rang.", await turn_store.get_revision(story_id))
+        await db.update_character_state(story_id, "char_mira", "User edit", "Alert")
+        with self.assertRaises(turn_store.TurnConflictError):
+            await engine.accept_authored_turn(story_id, preview["preview_id"])
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 1)
+
+    async def test_authored_invalid_witness_changes_nothing(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        original = model.json_completion
+        async def invalid_witness(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            result["events"] = [{"description": "A bell rings.", "witnesses": ["unknown"]}]
+            return result
+        model.json_completion = invalid_witness
+        revision = await turn_store.get_revision(story_id)
+        with self.assertRaises(ValueError):
+            await engine.preview_authored_turn(story_id, "A bell rang.", revision)
+        self.assertEqual(await turn_store.get_revision(story_id), revision)
+        self.assertEqual(engine.authored_previews, {})
 
     async def test_modes_information_boundaries_and_replay(self):
         model, engine, story_id = await self.create_recorded_story()

@@ -118,3 +118,41 @@ Uusi agentti tai Kertojan alitoiminto, joka ajaa strukturoidun vertailun:
 3. **Vaihe 3: Täysi Reconciliation & Konsistenssivahti**
    * Toteutetaan `reconciliation_agent.py` kattavalla skeemalla.
    * Mahdollistetaan aiempien vuorojen muokkaus ja maailman faktalistan automaattinen päivitys.
+
+## 5. Näkökulmat, Luvut Ja Uudet Seikkailut
+
+Suunnittelusuositus 30.9.2026. Monirivinen syöttökenttä ja uuden oman jatkokappaleen analyysi, esikatselu ja atominen hyväksyntä on toteutettu. Vanhojen kappaleiden sovitus, pelaajan näkökulmatekstit ja muut tämän osion kokonaisuudet ovat edelleen suunnitelma.
+
+### Yksi tapahtumatila, kaksi lukunäkymää
+
+- Säilytä yksi kanoninen tapahtuma- ja maailmantila. Pelaajan teksti ja kertojan teksti ovat saman hyväksytyn vuoron esityksiä, eivät erillisiä simulaatioita.
+- Roolipelissä pelaajan proosa tuotetaan vain hänen tiedoistaan ja havaitsemistaan tapahtumista. Myös valinnat, otsikot ja kertaukset rajataan tähän tietoon.
+- Tiukin toteutus erottaa tapahtumien ratkaisun ja pelaajaproosan kirjoittamisen: jälkimmäinen kutsu ei saa kaikkitietävää proosaa tai muiden salaisuuksia. Kertojan täysi proosa voidaan tuottaa erikseen tai tilauksesta.
+- Tallenna vuorolle mode, viewpoint_character_id ja näkökulmahahmon nimi vuoron hetkellä. Näytä erotin näkökulman tai tilan vaihtuessa. Vanhojen vuorojen näkökulmaa ei vaihdeta jälkikäteen pelaajahahmon mukana.
+- Lukunäkymään Pelaajan näkökulma ja Kertojan kokonaiskertomus. Jälkimmäinen on tietoinen spoilerivalinta, ei osa pelaajan normaalia tietovirtaa.
+- Älä kirjoita kaikille hahmoille omaa täyttä proosaa jokaisella vuorolla. Havainnot, muistit ja nykytila riittävät agenttien syötteeksi; hahmon päiväkirjan voi tuottaa pyynnöstä.
+- Taustahahmot aktivoidaan merkityksellisen tavoitteen, aikarajan tai maailmantapahtuman perusteella. Ei kaikkien hahmojen kutsua joka vuorolla. Offscreen-tapahtumat tallennetaan ja tulevat pelaajalle näkyviin vasta havaittavien seurausten kautta.
+
+### Luvut ja sisällysluettelo
+
+- Hyödynnä olemassa olevaa chapter_end-rajaa, älä muodosta lukua kiinteästä vuoromäärästä.
+- Tallenna otsikko, vuoroväli ja luvun tiivistelmä. Sisällysluettelo siirtyy tallennettuun vuorotunnisteeseen.
+- Roolipelissä näkyvät otsikot ja kertaukset eivät saa paljastaa salaisia tapahtumia. Kertojan kronikka voi sisältää laajemman version.
+- Tiivistelmän pitää avautua myös napsauttamalla ja näppäimistöllä, ei vain hoverilla. Kumulatiivinen runtime.summary ei korvaa historiallisia lukutiivistelmiä.
+
+### Maailman kopiointi uudeksi seikkailuksi
+
+- Luo ensin paikallinen luonnos ilman LLM-kutsua tai aloituskappaletta. Käyttäjä valitsee hahmot, teeman, juonen ja alkutilanteen ennen aloituksen generointia.
+- Erottele Maailmapohja (lore ja hahmojen perustiedot) ja Jatka nykyisestä tilanteesta (myös valitut faktat, tilat ja muistit).
+- Älä kopioi vanhaa juonisuunnitelmaa, pyyntökuitteja, API-lokeja tai undo-historiaa uuteen tarinaan.
+- Valitsemattomiin hahmoihin viittaavia suhteita tai muistoja ei poisteta hiljaisesti: valitse jäävätkö he maailman taustahahmoiksi vai tarvitseeko sisältö hyväksytyn sovituksen.
+- Tallenna lähdetarinan tunniste ja revision kopiointirajaksi. Uusi luonnos on itsenäinen, ei linkki muuttuvaan lähdetilaan.
+
+### Käyttäjän kirjoittama jatko
+
+- Luonnos kertojalle: monirivinen syöte, jonka kertoja muotoilee ja ratkaisee hahmojen aikeiden kanssa. Tämä syöttökenttä on toteutettu; Enter lisää rivin ja Ctrl/Cmd+Enter lähettää.
+- Oma valmis kappale: toteutettu erillinen toiminto säilyttää proosan sellaisenaan. Tapahtumat, havaitsijat ja tilamuutokset poimitaan esikatseluun ja hyväksytään atomisesti palautuspisteen kanssa. Esikatselu ei muuta tilaa, vanhenee 30 minuutissa ja hylätään revision vaihtuessa. Ensimmäinen versio käyttää olemassa olevia hahmoja, enintään 20 000 merkin tekstiä eikä sovita vanhoja kappaleita.
+- Tuleva toive pidetään erillään jo tapahtuneesta proosasta. Tyhjä toive sallii itsenäisen jatkon.
+- Synkronoimaton oma teksti on luonnos, ei hahmojen tietolähde. Agenttien jatko estetään, kunnes muutokset on hyväksytty tai hylätty.
+
+Suositeltu toteutusjärjestys: oma jatko ja tilasynkronointi; pelaajan näkökulma ja vuorojen näkökulmatiedot; luvut ja sisällysluettelo; maailman kopiointi; valikoiva taustasimulaatio ja pyynnöstä tuotettavat hahmopäiväkirjat.

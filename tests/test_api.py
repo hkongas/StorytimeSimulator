@@ -200,6 +200,23 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(endpoint + "/turn-jobs/editor-turn")).status_code, 409)
         self.assertEqual((await self.client.put("/api/stories/missing/turns/1", json=payload)).status_code, 404)
 
+    async def test_authored_preview_and_accept_api(self):
+        created = await self.client.post("/api/stories", json={"title": "Authored test"})
+        story_id = created.json()["data"]["story_id"]
+        endpoint = f"/api/stories/{story_id}"
+        revision = (await self.client.get(endpoint)).json()["revision"]
+        preview = await self.client.post(endpoint + "/authored-turns/preview", json={"prose": "A bell rang.", "expected_revision": revision})
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(len((await self.client.get(endpoint)).json()["turns"]), 1)
+        request = {"preview_id": preview.json()["preview_id"]}
+        accepted = await self.client.post(endpoint + "/authored-turns/accept", json=request)
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.json()["data"]["director_prose"], "A bell rang.")
+        self.assertEqual((await self.client.post(endpoint + "/authored-turns/accept", json=request)).status_code, 200)
+        self.assertEqual(len((await self.client.get(endpoint)).json()["turns"]), 2)
+        missing = await self.client.post(endpoint + "/authored-turns/accept", json={"preview_id": "0" * 32})
+        self.assertEqual(missing.status_code, 409)
+
     async def test_gemini_profile_key_stays_server_side(self):
         from core.profile_store import load_profiles
         original_key = settings.GEMINI_API_KEY
