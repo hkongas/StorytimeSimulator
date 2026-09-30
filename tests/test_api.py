@@ -178,6 +178,47 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_api_cycle(self):
         await test_api_endpoints()
 
+    async def test_prose_editor_undo_and_conflicts(self):
+        created = await self.client.post("/api/stories", json={"title": "Editor test"})
+        story_id = created.json()["data"]["story_id"]
+        endpoint = f"/api/stories/{story_id}"
+        await engine.advance_turn(story_id, mode="novel", request_id="editor-turn")
+        details = (await self.client.get(endpoint)).json()
+        self.assertTrue(details["can_undo"])
+        edit_endpoint = endpoint + f'/turns/{details["turns"][-1]["id"]}'
+        payload = {"prose": "Edited <script>not executed</script>", "expected_revision": details["revision"]}
+        self.assertEqual((await self.client.put(edit_endpoint, json={**payload, "sync_state": True})).status_code, 422)
+        self.assertEqual((await self.client.put(edit_endpoint, json=payload)).status_code, 200)
+        self.assertEqual((await self.client.put(edit_endpoint, json=payload)).status_code, 409)
+        self.assertIn(payload["prose"], (await self.client.get(endpoint + "/export/txt")).text)
+        details = (await self.client.get(endpoint)).json()
+        undo = await self.client.post(endpoint + "/turns/undo", json={"expected_revision": details["revision"]})
+        self.assertEqual(undo.status_code, 200)
+        details = (await self.client.get(endpoint)).json()
+        self.assertEqual(len(details["turns"]), 1)
+        self.assertFalse(details["can_undo"])
+        self.assertEqual((await self.client.get(endpoint + "/turn-jobs/editor-turn")).status_code, 409)
+        self.assertEqual((await self.client.put("/api/stories/missing/turns/1", json=payload)).status_code, 404)
+
+    async def test_gemini_profile_key_stays_server_side(self):
+        from core.profile_store import load_profiles
+        original_key = settings.GEMINI_API_KEY
+        original_provider = settings.LLM_PROVIDER
+        try:
+            response = await self.client.post("/api/settings", json={
+                "profile_id": "google", "llm_provider": "gemini", "gemini_api_key": "synthetic-gemini-value"
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(load_profiles()["google"]["gemini_api_key"], "synthetic-gemini-value")
+            result = await self.client.get("/api/settings")
+            self.assertTrue(result.json()["has_gemini_key"])
+            self.assertNotIn("synthetic-gemini-value", result.text)
+            await self.client.post("/api/settings", json={"profile_id": "google", "gemini_api_key": ""})
+            self.assertEqual(settings.GEMINI_API_KEY, "synthetic-gemini-value")
+        finally:
+            settings.GEMINI_API_KEY = original_key
+            settings.LLM_PROVIDER = original_provider
+
     async def test_background_job_replay_and_origin(self):
         import web.api as api
         created = await self.client.post("/api/stories", json={"title": "Job test"})

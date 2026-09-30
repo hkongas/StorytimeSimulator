@@ -109,8 +109,8 @@ const translations = {
     settingOpenaiKeyLabel: "OpenAI API-avain",
     settingOpenrouterKeyLabel: "OpenRouter API-avain",
     
-    directorSettingsSection: "🎬 Kertojan / Pääagentin hienosäädöt (Director & Novelist)",
-    characterSettingsSection: "🧠 Hahmoagenttien hienosäädöt (Character Agents)",
+    directorSettingsSection: "Kertojan asetukset",
+    characterSettingsSection: "Hahmoagenttien asetukset",
     modelLabel: "Malli",
     maxTokensLabel: "Maksimitokenit (Max Tokens)",
     temperatureLabel: "Luovuus / Lämpötila (Temperature)",
@@ -254,8 +254,8 @@ const translations = {
     settingOpenaiKeyLabel: "OpenAI API Key",
     settingOpenrouterKeyLabel: "OpenRouter API Key",
 
-    directorSettingsSection: "🎬 Director & Novelist Tuning",
-    characterSettingsSection: "🧠 Character Agents Tuning",
+    directorSettingsSection: "Narrator Settings",
+    characterSettingsSection: "Character Agent Settings",
     modelLabel: "Model",
     maxTokensLabel: "Max Output Tokens",
     temperatureLabel: "Creativity / Temperature",

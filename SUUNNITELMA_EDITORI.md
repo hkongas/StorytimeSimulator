@@ -1,5 +1,7 @@
 # Suunnitelma: Tarinan Editori ja Älykäs Tilasynkronointi
 
+Toteutustilanne 30.9.2026: tekstieditori, revision tarkistus, proosahistoria tietokannassa ja uusien vuorojen kumoaminen palautuspisteistä on toteutettu. Aloituksella ja vanhoilla vuoroilla ei ole palautuspisteitä. Myöhemmät erilliset tilamuutokset estävät kumoamisen. Tasot 2 ja 3 ovat edelleen suunnitelma, eivät käytettävissä olevia toimintoja. Tilasynkronoinnin pitää käyttää ennen vuoroa vallinnutta tilaa, näyttää muutosehdotus ja vaatia hyväksyntä. Vanhojen lukujen muutokset tarvitsevat myöhemmän tilan uudelleenarvioinnin tai haaran, eivät pelkkää nykytilan paikkausta.
+
 Tämä dokumentti määrittelee suunnitelman Tarinamoottorin laajentamiseksi yhdistetyksi **simulaattoriksi ja kirjailija-apuriksi**. Järjestelmä yhdistää itsenäisten hahmojen moniagenttisimulaation vapaaseen proosan muokkaukseen, automaattiseen maailmantilan hallintaan ja ristiriitojen valvontaan.
 
 ---

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from dotenv import set_key
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import settings
 from core.types import StoryInitRequest, AdvanceStoryRequest, StoryMeta
@@ -55,6 +55,11 @@ async def local_request_boundary(request: Request, call_next):
 @app.exception_handler(ValueError)
 async def invalid_request(request: Request, error: ValueError):
     return JSONResponse({"detail": str(error)}, status_code=400)
+
+
+@app.exception_handler(turn_store.TurnConflictError)
+async def turn_conflict(request: Request, error: turn_store.TurnConflictError):
+    return JSONResponse({"detail": str(error)}, status_code=409)
 
 
 async def run_turn_job(story_id: str, req: AdvanceStoryRequest, job: dict):
@@ -161,6 +166,7 @@ async def get_story_details(story_id: str):
     if not meta:
         raise HTTPException(status_code=404, detail="Tarinaa ei löydy.")
 
+    revision = await turn_store.get_revision(story_id)
     characters = await db.get_all_characters(story_id)
     active_scene = await db.get_active_scene(story_id)
     turns = await db.get_all_story_turns(story_id)
@@ -168,6 +174,10 @@ async def get_story_details(story_id: str):
 
     txt_path = db.get_story_dir(story_id) / "story.txt"
     full_text = txt_path.read_text(encoding="utf-8") if txt_path.exists() else ""
+    runtime = await turn_store.get_runtime(story_id)
+    can_undo = await turn_store.can_rollback(story_id)
+    if revision != await turn_store.get_revision(story_id):
+        raise turn_store.TurnConflictError("Tarina muuttui latauksen aikana. Lataa se uudelleen.")
 
     return {
         "meta": meta,
@@ -175,9 +185,42 @@ async def get_story_details(story_id: str):
         "active_scene": active_scene,
         "turns": turns,
         "chronicle": chronicle,
-        "runtime": await turn_store.get_runtime(story_id),
+        "runtime": runtime,
+        "revision": revision,
+        "can_undo": can_undo,
         "full_text": full_text
     }
+
+class TurnProseUpdate(BaseModel):
+    prose: str = Field(min_length=1, max_length=200000)
+    expected_revision: int = Field(ge=0)
+    sync_state: bool = False
+
+
+class TurnUndoRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+
+
+@app.put("/api/stories/{story_id}/turns/{turn_id}")
+async def edit_turn(story_id: str, turn_id: int, req: TurnProseUpdate):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    if req.sync_state:
+        raise HTTPException(422, "Automaattista tilasynkronointia ei ole vielä toteutettu. Tekstiä ei tallennettu.")
+    await turn_store.update_turn_prose(story_id, turn_id, req.prose, req.expected_revision)
+    return {"status": "success", "revision": await turn_store.get_revision(story_id)}
+
+
+@app.post("/api/stories/{story_id}/turns/undo")
+async def undo_turn(story_id: str, req: TurnUndoRequest):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    await turn_store.rollback_last_turn(story_id, req.expected_revision)
+    for key in list(jobs):
+        if key[0] == story_id and jobs[key]["status"] != "running":
+            del jobs[key]
+    return {"status": "success", "revision": await turn_store.get_revision(story_id)}
+
 
 @app.delete("/api/stories/{story_id}")
 async def delete_story_endpoint(story_id: str):
@@ -520,6 +563,7 @@ class SettingsUpdate(BaseModel):
     azure_deployment_name: Optional[str] = None
     openai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
     
     director_model: Optional[str] = None
     director_max_tokens: Optional[int] = None
@@ -542,6 +586,7 @@ async def get_settings():
         "azure_deployment_name": settings.AZURE_DEPLOYMENT_NAME,
         "has_openai_key": bool(settings.OPENAI_API_KEY),
         "has_openrouter_key": bool(settings.OPENROUTER_API_KEY),
+        "has_gemini_key": bool(settings.GEMINI_API_KEY),
         
         "director_model": settings.DIRECTOR_MODEL,
         "director_max_tokens": settings.DIRECTOR_MAX_TOKENS,
@@ -587,6 +632,8 @@ async def update_settings(req: SettingsUpdate):
         settings.OPENAI_API_KEY = req.openai_api_key
     if req.openrouter_api_key:
         settings.OPENROUTER_API_KEY = req.openrouter_api_key
+    if req.gemini_api_key:
+        settings.GEMINI_API_KEY = req.gemini_api_key
         
     if req.director_model:
         settings.DIRECTOR_MODEL = req.director_model

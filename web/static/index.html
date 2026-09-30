@@ -7,8 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/i18n.js"></script>
+  <link rel="stylesheet" href="/static/style.css?v=20260930">
+  <script src="/static/i18n.js?v=20260930-azure3"></script>
 </head>
 <body class="theme-dark">
   <div id="app" class="app-layout">
@@ -95,6 +95,7 @@
           </div>
 
           <!-- Tarinan poistonappi nykyiselle tarinalle -->
+          <button id="undoTurnBtn" class="btn-icon" onclick="undoLastTurn()" title="Kumoa viimeisin vuoro" aria-label="Kumoa viimeisin vuoro" disabled>↶</button>
           <button id="deleteCurrentStoryBtn" class="btn btn-danger-outline btn-sm hidden" onclick="deleteCurrentActiveStory()" title="Poista tämä tarina">
             ✕ Poista
           </button>
@@ -581,6 +582,7 @@
           <div class="profile-actions">
             <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('xai')">+ Grok</button>
             <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('azure')">+ Azure AI</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="createSettingsProfile('gemini')">+ Google AI Studio</button>
             <button type="button" class="btn btn-danger btn-xs" onclick="deleteSettingsProfile()">Poista</button>
           </div>
         </div>
@@ -595,6 +597,7 @@
           <select id="settingProvider" class="styled-select" onchange="toggleProviderSettings(this.value)">
             <option value="xai" data-i18n="settingProviderXai">xAI Grok</option>
             <option value="azure" data-i18n="settingProviderAzure">Azure AI / Azure OpenAI</option>
+            <option value="gemini">Google AI Studio / Gemini</option>
           </select>
         </div>
 
@@ -603,23 +606,38 @@
           <input type="password" id="settingXaiKey" class="styled-input" placeholder="xai-..." autocomplete="new-password" data-lpignore="true" data-1p-ignore="true">
         </div>
 
+        <div id="groupGemini" class="form-group hidden">
+          <label for="settingGeminiKey">Google AI Studio API-avain</label>
+          <input type="password" id="settingGeminiKey" class="styled-input" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true">
+        </div>
+
         <div id="groupAzure" class="form-group-container hidden">
+          <div class="form-group">
+            <label for="settingAzureApiMode">Azure OpenAI -rajapinta</label>
+            <select id="settingAzureApiMode" class="styled-select" onchange="updateAzureApiControls()">
+              <option value="v1">OpenAI v1 — /openai/v1/</option>
+              <option value="deployments">Deployment-rajapinta — /openai/deployments/ + api-version</option>
+            </select>
+            <small class="setting-note">Malli-kenttiin Azure-portaalin deployment-nimet, ei välttämättä mallin tuotenimiä.</small>
+          </div>
           <div class="form-group">
             <label for="settingAzureEndpoint" data-i18n="settingAzureEndpointLabel">Azure OpenAI -päätepiste</label>
             <input type="url" id="settingAzureEndpoint" class="styled-input" placeholder="https://oma-resurssi.cognitiveservices.azure.com/openai/v1/" autocomplete="off">
+            <small class="setting-note">v1: https://[resource].services.ai.azure.com/openai/v1/ ilman responses-päätettä. Kopioidun responses-päätteen poistamme tallennuksessa.</small>
           </div>
           <div class="form-group">
             <label for="settingAzureKey" data-i18n="settingAzureKeyLabel">Azure API-avain</label>
             <input type="password" id="settingAzureKey" class="styled-input" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true">
           </div>
-          <div class="grid-2-col">
+          <div id="azureDeploymentOptions" class="hidden">
             <div class="form-group">
               <label for="settingAzureVersion" data-i18n="settingAzureVersionLabel">Azure API-versio</label>
               <input type="text" id="settingAzureVersion" class="styled-input" placeholder="2024-10-21">
             </div>
             <div class="form-group">
-              <label for="settingAzureDeployment">Deployment-nimi (vain perinteinen Azure)</label>
-              <input type="text" id="settingAzureDeployment" class="styled-input" placeholder="gpt-4o-production">
+              <label for="settingAzureDeployment">Sama deployment kertojalle ja hahmoille</label>
+              <input type="text" id="settingAzureDeployment" class="styled-input" placeholder="Tyhjä: käytä roolien Malli-kenttiä" disabled>
+              <small class="setting-note">Valinnainen. Tyhjänä käytetään kummankin roolin omaa Malli-kenttää.</small>
             </div>
           </div>
         </div>
@@ -635,13 +653,13 @@
               <input type="text" id="settingDirectorModel" class="styled-input" placeholder="grok-4.6 / gpt-4o">
             </div>
             <div class="form-group">
-              <label data-i18n="maxTokensLabel">Maksimitokenit</label>
-              <input type="number" id="settingDirectorMaxTokens" class="styled-input" min="500" max="64000" step="500" placeholder="35000">
+              <label id="directorTokenLabel" for="settingDirectorMaxTokens">Vastausbudjetti</label>
+              <input type="number" id="settingDirectorMaxTokens" class="styled-input" min="500" max="128000" step="1" placeholder="32000" title="Vastauksen enimmäisbudjetti, ei tavoitepituus. Päättely voi kuluttaa samaa budjettia. Suurempi raja vähentää katkeamisriskiä; käyttämättömiä tokeneita ei yleensä laskuteta. Mallin oma vastausraja pätee." aria-description="Vastauksen enimmäisbudjetti sisältää mallista riippuen myös päättelyn. Käyttämätöntä budjettia ei yleensä laskuteta.">
             </div>
             <div class="form-group">
               <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
               <input type="number" id="settingDirectorTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.85">
-              <small id="settingDirectorTempNote" class="setting-note hidden">Azure AI Foundry GPT-5 käyttää kiinteää arvoa 1.</small>
+              <small id="settingDirectorTempNote" class="setting-note hidden">Azure GPT-5/6: lämpötila 1.</small>
             </div>
             <div class="form-group">
               <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
@@ -666,13 +684,13 @@
               <input type="text" id="settingCharModel" class="styled-input" placeholder="grok-4.3 / gpt-4o">
             </div>
             <div class="form-group">
-              <label data-i18n="maxTokensLabel">Maksimitokenit</label>
-              <input type="number" id="settingCharMaxTokens" class="styled-input" min="200" max="8000" step="100" placeholder="1200">
+              <label id="characterTokenLabel" for="settingCharMaxTokens">Vastausbudjetti</label>
+              <input type="number" id="settingCharMaxTokens" class="styled-input" min="200" max="64000" step="1" placeholder="16000" title="Vastauksen enimmäisbudjetti, ei tavoitepituus. Päättely voi kuluttaa samaa budjettia. Varaa päättelymallille enemmän tilaa; käyttämättömiä tokeneita ei yleensä laskuteta. Mallin oma vastausraja pätee." aria-description="Vastauksen enimmäisbudjetti sisältää mallista riippuen myös päättelyn. Käyttämätöntä budjettia ei yleensä laskuteta.">
             </div>
             <div class="form-group">
               <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
               <input type="number" id="settingCharTemp" class="styled-input" min="0.1" max="1.5" step="0.05" placeholder="0.75">
-              <small id="settingCharTempNote" class="setting-note hidden">Azure AI Foundry GPT-5 käyttää kiinteää arvoa 1.</small>
+              <small id="settingCharTempNote" class="setting-note hidden">Azure GPT-5/6: lämpötila 1.</small>
             </div>
             <div class="form-group">
               <label data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
@@ -734,7 +752,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
-  <script src="/static/turns.js"></script>
+  <script src="/static/app.js?v=20260930-scroll1"></script>
+  <script src="/static/turns.js?v=20260930"></script>
 </body>
 </html>

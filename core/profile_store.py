@@ -2,7 +2,7 @@ import json
 
 from config import settings
 
-KEY_FIELDS = {"xai_api_key", "azure_openai_api_key", "openai_api_key", "openrouter_api_key"}
+KEY_FIELDS = {"xai_api_key", "azure_openai_api_key", "openai_api_key", "openrouter_api_key", "gemini_api_key"}
 
 
 def load_profiles() -> dict:

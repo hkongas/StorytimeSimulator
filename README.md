@@ -41,6 +41,14 @@ Tilaa voi vaihtaa kesken tarinan. Hahmokortin **Pelaa hahmona** siirtää roolip
 - **Keskeytä** lopettaa keskeneräisen työn. Jo hyväksyttyä vuoroa se ei peruuta.
 - **Näytä salaisuudet** avaa ohjaajan ja hahmojen yksityisiä tietoja. Se on lukukokemuksen valinta, ei käyttäjien välinen käyttöoikeusraja.
 
+## Tekstieditori Ja Kumoaminen
+
+Vuoron kynäpainike avaa tekstieditorin. **Tallenna vain teksti** päivittää proosan ja vientitiedostot ilman mallikutsuja. Korjattu tuore proosa menee kertojan seuraavan vuoron kontekstiin. Revision tarkistus estää vanhentuneen tallennuksen. Vanha ja uusi proosa säilyvät `prose_edits`-historiassa; historian palautusnäkymää ei vielä ole.
+
+**Tekstimuokkaus ei muuta tapahtumia, havaintoja, muisteja tai jatkuvuustiivistelmää.** Käytä sitä oikolukuun ja tyyliin. Juonimuutosten automaattista tilasynkronointia ei vielä ole; `sync_state: true` hylätään tallentamatta tekstiä. Myös vanhoja kappaleita voi korjata tekstinä, mutta muutokset eivät kirjoita myöhempien vuorojen tilaa uudelleen.
+
+Kumoamispainike palauttaa viimeisintä vuoroa edeltäneet hahmot, muistit, havainnot, kohtaukset ja jatkuvuustilan. Se toimii vain uusille vuoroille, joille tämä versio tallensi palautuspisteen. Aloitusta ja vanhoja vuoroja ei voi kumota. Myöhemmät erilliset tilamuutokset estävät kumoamisen; tekstikorjaukset eivät. Mallikuluja ei hyvitetä. Uusi jatko käyttää uutta pyyntötunnistetta. Editorin avaaminen tai kumoaminen pysäyttää automaattijatkon.
+
 ## Vuoron Tietovirta
 
 ```text
@@ -68,7 +76,7 @@ Muistihaku yhdistää viimeaikaisia muistoja vanhempiin paikkaan tai motiiviin s
 - Katkennut tai virheellinen mallivastaus hylätään. Se ei muutu keksityksi varatarinaksi.
 - `story.txt` ja `story.md` ovat tietokannasta muodostettavia vientitiedostoja. Niihin käsin tehdyt muutokset eivät päivitä tarinan tilaa ja korvautuvat seuraavassa viennissä.
 
-Vanha tietokanta päivitetään avattaessa. Ennen version 4 migraatiota olemassa olevasta tietokannasta tehdään SQLite-varmuuskopio `story.pre-v4.db`. Säilytä lisäksi omat varmuuskopiot tärkeistä tarinoista. Älä käytä samaa tarinakansiota samanaikaisesti usealta koneelta pilvisynkronoinnin kautta.
+Vanha tietokanta päivitetään avattaessa. Vanhemmasta kannasta tehdään `story.pre-v4.db` ja version 4 kannasta ennen editorimigraatiota `story.pre-v5.db` SQLite-varmuuskopio. Säilytä lisäksi omat varmuuskopiot tärkeistä tarinoista. Älä käytä samaa tarinakansiota samanaikaisesti usealta koneelta pilvisynkronoinnin kautta.
 
 ## Yksityisyys Ja Asetukset
 
@@ -78,13 +86,21 @@ API-avaimet säilytetään palvelimen `.env`- ja `.provider-profiles.json`-tiedo
 
 Sovellus on yhden omistajan paikallinen työkalu: ei kirjautumista, monikäyttäjyyttä tai internet-julkaisua varten. Palvelu hyväksyy localhost-isännät ja torjuu vieraasta selainalkuperästä tulevat pyynnöt. Tarina- ja prompttipolut on rajattu omiin hakemistoihinsa. Mallin ja tuontikorttien tekstiä ei suoriteta HTML:nä.
 
-Asetuksissa on yhteinen tarjoaja ja erilliset kertoja- ja hahmomallit. Koodi tukee xAI-, Azure-, OpenAI-, OpenRouter- ja OpenAI-yhteensopivia rajapintoja; nykyinen selainprofiilien näkymä kattaa xAI:n ja Azuren. Muita tarjoajia voi määrittää ympäristöasetuksilla. Mallikohtaiset rajapintaominaisuudet voivat vaihdella.
+Asetuksissa on yhteinen tarjoaja ja erilliset kertoja- ja hahmomallit. Koodi tukee xAI-, Azure-, Gemini-, OpenAI-, OpenRouter- ja OpenAI-yhteensopivia rajapintoja; selainprofiilien näkymä kattaa xAI:n, Azuren ja Google AI Studion. Gemini käyttää Googlen OpenAI-yhteensopivaa tekstirajapintaa. Aseta `GEMINI_API_KEY` ja `LLM_PROVIDER=gemini` tai luo Google-profiili selaimessa. Mallinimet ovat muokattavia. Gemini 2.5 Flash-Liten mallitunniste on `gemini-2.5-flash-lite`; Googlen nykyisen dokumentaation mukaan 2.5-mallit ovat rajattuja aiemmille käyttäjille. Uuden profiilin oletukset ovat dokumentoidut uudemmat Flash ja Flash-Lite. Katso [malliarvio](ARVIO_GEMINI.md). Muut tarjoajat voi määrittää ympäristöasetuksilla.
 
 API-loki sisältää syöte-, vastaus-, päättely- ja välimuistitokenit silloin, kun palvelu ilmoittaa ne. Välimuistitokenit ovat syötetokenien osajoukko. Hinta näytetään vain palvelun raportoimana, ja kooste ilmoittaa kuinka monesta kutsusta hintatieto on saatavilla. Puuttuva hinta ei tarkoita ilmaista kutsua.
 
 `MAX_INPUT_TOKENS` rajoittaa syötteen arvioitua kokoa (oletus 64000). Arvio on merkkimääräpohjainen, ei mallin tarkka tokenisaattori. Ylitys keskeyttää pyynnön ennen verkkokutsua eikä leikkaa sisältöä hiljaisesti.
 
 ## Projektin Rakenne
+
+### Azure-rajapinnan valinta
+
+Valitse asetuksista Azure-portaalin koodiesimerkin URL-muoto. **OpenAI v1** käyttää osoitetta `https://<resurssi>.services.ai.azure.com/openai/v1/` tai `https://<resurssi>.openai.azure.com/openai/v1/`. Poista viimeinen `responses`: sovellus käyttää Chat Completions -rajapintaa, ei Responses API:a. Selain poistaa kopioidun `responses`- tai `chat/completions`-päätteen tallennuksessa. API-version ja saman deploymentin kentät piilotetaan v1-tilassa. Malli-kenttiin tulee Azure-portaalin deployment-nimi.
+
+**Deployment-rajapinta** käyttää resurssin juuriosoitetta `https://<resurssi>.openai.azure.com/` ja päivämäärämuotoista `api-version`-arvoa. **Sama deployment kertojalle ja hahmoille** on valinnainen: tyhjänä käytetään roolien omia Malli-kenttiä. Sovellus muodostaa kutsupolun itse. 404 voi tarkoittaa väärää resurssia, URL-muotoa tai deployment-nimeä.
+
+Tokenkentät rajaavat yhden vastauksen budjettia, eivät proosan tavoitepituutta tai syötteen kontekstia. Uusien Azure-profiilien oletukset ovat kertojalle 32 000 ja hahmoille 16 000; muiden tarjoajien profiilioletukset säilyvät 8 000 / 1 200. Tallennettuja profiileja ja ympäristöasetuksia ei koroteta automaattisesti. Kenttien ylärajat ovat 128 000 / 64 000, mutta mallin oma vastausraja pätee. Azure v1 käyttää `max_completion_tokens`-parametria, joka sisältää mallista riippuen myös päättelyn. Muiden tarjoajien parametrit pysyvät tarjoajakohtaisina. Katkeamisen automaattinen uusintayritys voi nostaa pyydettyä budjettia: asetus ei ole ehdoton kustannuskatto.
 
 - `engine/story_engine.py`: tilakohtainen vuoroprosessi ja hyväksyminen.
 - `engine/director_agent.py`, `engine/character_agent.py`: agenttien syötteet ja validoidut vastaukset.
@@ -114,4 +130,4 @@ Käyttöliittymää on kokeiltu kehitystyön yhteydessä työpöytä- ja puhelin
 
 Havaitsijoiden rajaus estää suoran yhteisen proosakontekstin vuodon. Kertoja on silti kielimalli: se voi kirjoittaa virheellisen havaintokuvauksen tai ristiriitaisen seurauksen. Skeematarkistus ei todista tapahtumien semanttista oikeellisuutta. Päätöskohtien ja kappaleiden rytmitys riippuu mallista ja prompteista.
 
-Vuorojen peruminen, tarinahaarat, proosan jälkieditointi, kuvien generointi ja usean palvelinprosessin työjono eivät kuulu tähän toteutukseen. Kuvituspromptteja voidaan edelleen tuottaa. Näitä ominaisuuksia kannattaa lisätä hyväksytyn tapahtuma- ja tilamallin päälle, ei ohittamalla sitä.
+Tarinahaarat, proosamuutosten automaattinen tilasynkronointi, kuvien generointi ja usean palvelinprosessin työjono eivät kuulu tähän toteutukseen. Kuvituspromptteja voidaan edelleen tuottaa. Näitä ominaisuuksia kannattaa lisätä hyväksytyn tapahtuma- ja tilamallin päälle, ei ohittamalla sitä.

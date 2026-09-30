@@ -1,6 +1,7 @@
 import json
 import logging
 import httpx
+from urllib.parse import urlsplit, quote
 from typing import List, Dict, Any, Optional, AsyncIterator
 from core.providers.base import LLMProvider
 
@@ -20,8 +21,13 @@ class AzureProvider(LLMProvider):
         self.deployment_name = deployment_name
 
     def _resolve_endpoint_and_headers(self, model: str) -> tuple[str, Dict[str, str], bool]:
-        clean_base = (self.base_url or "").rstrip("/")
+        clean_base = (self.base_url or "").strip().rstrip("/")
+        parsed = urlsplit(clean_base)
+        if parsed.scheme != "https" or not parsed.netloc or parsed.query or parsed.fragment:
+            raise ValueError("Azure-paatepisteen on oltava HTTPS-osoite ilman kyselyparametreja.")
         azure_foundry_v1 = clean_base.lower().endswith("/openai/v1")
+        if not azure_foundry_v1 and parsed.path not in {"", "/"}:
+            raise ValueError("Kayta Azure OpenAI v1 -osoitetta, joka paattyy /openai/v1/, tai deployment-rajapinnalle resurssin juuriosoitetta ilman polkua.")
 
         headers = {
             "Content-Type": "application/json",
@@ -31,17 +37,17 @@ class AzureProvider(LLMProvider):
         if azure_foundry_v1:
             endpoint = f"{clean_base}/chat/completions"
         else:
-            deployment = self.deployment_name or model
+            deployment = quote(self.deployment_name or model, safe="")
             endpoint = f"{clean_base}/openai/deployments/{deployment}/chat/completions?api-version={self.api_version}"
 
         return endpoint, headers, azure_foundry_v1
 
     def _build_payload(self, messages: List[Dict[str, str]], model: str, temperature: float, max_tokens: Optional[int], reasoning_effort: Optional[str], azure_foundry_v1: bool, stream: bool = False) -> Dict[str, Any]:
         norm_model = model.lower()
-        is_gpt5 = norm_model.startswith("gpt-5") or norm_model.startswith("o1") or norm_model.startswith("o3")
+        is_gpt5 = norm_model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
         
         target_temp = 1.0 if is_gpt5 else temperature
-        token_param = "max_completion_tokens" if is_gpt5 else "max_tokens"
+        token_param = "max_completion_tokens" if azure_foundry_v1 or is_gpt5 else "max_tokens"
 
         payload: Dict[str, Any] = {
             "messages": messages,
@@ -85,12 +91,28 @@ class AzureProvider(LLMProvider):
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(endpoint, headers=headers, json=payload)
 
-            if response.status_code != 200 and "reasoning_effort" in payload:
-                payload.pop("reasoning_effort", None)
+            for retry in range(3):
+                if response.status_code != 400:
+                    break
+                try:
+                    error = response.json().get("error", {})
+                except ValueError:
+                    break
+                parameter = error.get("param")
+                message = error.get("message", "")
+                if parameter == "max_tokens" and "max_completion_tokens" in message and "max_tokens" in payload:
+                    payload["max_completion_tokens"] = payload.pop("max_tokens")
+                elif parameter == "temperature" and error.get("code") in {"unsupported_parameter", "unsupported_value"} and "temperature" in payload:
+                    payload.pop("temperature")
+                elif parameter == "reasoning_effort" and error.get("code") in {"unsupported_parameter", "unsupported_value"} and "reasoning_effort" in payload:
+                    payload.pop("reasoning_effort")
+                else:
+                    break
                 response = await client.post(endpoint, headers=headers, json=payload)
 
             if response.status_code != 200:
-                raise RuntimeError(f"Azure API Virhe ({response.status_code}): {response.text}")
+                hint = " Tarkista resurssin paatepiste ja Azure-julkaisun nimi (ei valttamatta mallin tuotenimi)." if response.status_code == 404 else ""
+                raise RuntimeError(f"Azure API Virhe ({response.status_code}): {response.text}{hint}")
 
             return self._read_response(response.json(), model, response.elapsed.total_seconds())
 

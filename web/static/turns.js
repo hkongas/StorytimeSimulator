@@ -2,6 +2,89 @@ let pendingTurns;
 try { pendingTurns = JSON.parse(sessionStorage.getItem('storytime.pendingTurns') || '{}'); }
 catch { pendingTurns = {}; }
 const pollingTurns = new Set();
+let activeTurnEditor = null;
+let editorSaving = false;
+
+function openTurnEditor(turn, turnElement) {
+  if (isGenerating || activeTurnEditor || editorSaving) return;
+  document.getElementById('autoContinue').checked = false;
+  const storyId = currentStoryId;
+  const revision = currentStoryData.revision;
+  const editor = document.createElement('div');
+  editor.className = 'turn-editor';
+  const textarea = document.createElement('textarea');
+  textarea.className = 'styled-input prose-editor-input';
+  textarea.value = turn.director_prose;
+  textarea.setAttribute('aria-label', 'Vuoron teksti');
+  const actions = document.createElement('div');
+  actions.className = 'turn-editor-actions';
+  const save = document.createElement('button');
+  save.className = 'btn btn-primary btn-sm';
+  save.textContent = 'Tallenna vain teksti';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-secondary btn-sm';
+  cancel.textContent = 'Peruuta';
+  cancel.onclick = () => {
+    if (editorSaving) return;
+    editor.remove();
+    turnElement.querySelectorAll(':scope > p').forEach(paragraph => paragraph.hidden = false);
+    activeTurnEditor = null;
+    syncTurnControls();
+  };
+  save.onclick = async () => {
+    if (!textarea.value.trim()) return;
+    editorSaving = true;
+    save.disabled = cancel.disabled = true;
+    try {
+      const response = await fetch(`/api/stories/${storyId}/turns/${turn.id}`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prose: textarea.value, expected_revision: revision, sync_state: false})
+      });
+      if (!response.ok) throw new Error((await response.json()).detail || 'Tallennus epäonnistui.');
+      activeTurnEditor = null;
+      editorSaving = false;
+      await loadStory(storyId);
+      turnNotice('Teksti tallennettu. Hahmojen muistit ja maailman tila säilyivät ennallaan.');
+    } catch (error) {
+      turnNotice(error.message);
+    } finally {
+      editorSaving = false;
+      save.disabled = cancel.disabled = false;
+      syncTurnControls();
+    }
+  };
+  actions.append(save, cancel);
+  editor.append(textarea, actions);
+  turnElement.querySelectorAll(':scope > p').forEach(paragraph => paragraph.hidden = true);
+  turnElement.append(editor);
+  activeTurnEditor = editor;
+  syncTurnControls();
+  textarea.focus();
+}
+
+async function undoLastTurn() {
+  if (!currentStoryId || isGenerating || activeTurnEditor || editorSaving || !currentStoryData?.can_undo) return;
+  document.getElementById('autoContinue').checked = false;
+  if (!confirm('Kumotaanko viimeisin vuoro ja palautetaanko sitä edeltävä tarinan tila? Mallikutsujen kustannuksia ei palauteta.')) return;
+  const storyId = currentStoryId;
+  editorSaving = true;
+  syncTurnControls();
+  try {
+    const response = await fetch(`/api/stories/${storyId}/turns/undo`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({expected_revision: currentStoryData.revision})
+    });
+    if (!response.ok) throw new Error((await response.json()).detail || 'Kumoaminen epäonnistui.');
+    editorSaving = false;
+    await loadStory(storyId);
+    turnNotice('Viimeisin vuoro kumottu.');
+  } catch (error) {
+    turnNotice(error.message);
+  } finally {
+    editorSaving = false;
+    syncTurnControls();
+  }
+}
 
 function savePendingTurns() {
   sessionStorage.setItem('storytime.pendingTurns', JSON.stringify(pendingTurns));
@@ -14,15 +97,17 @@ function turnNotice(message, retry = false) {
 
 function syncTurnControls() {
   isGenerating = Boolean(pendingTurns[currentStoryId]);
-  for (const id of ['advanceBtn', 'playerActBtn']) document.getElementById(id).disabled = isGenerating;
-  document.querySelectorAll('.choice-btn').forEach(button => button.disabled = isGenerating);
+  const blocked = isGenerating || Boolean(activeTurnEditor) || editorSaving;
+  for (const id of ['advanceBtn', 'playerActBtn']) document.getElementById(id).disabled = blocked;
+  document.querySelectorAll('.choice-btn, .edit-turn-btn').forEach(button => button.disabled = blocked);
+  document.getElementById('undoTurnBtn').disabled = blocked || !currentStoryData?.can_undo;
   document.getElementById('cancelTurnBtn').classList.toggle('hidden', !isGenerating);
   if (!isGenerating) showLiveAgentBar(false);
 }
 
 async function advanceStory() {
   const storyId = currentStoryId;
-  if (!storyId || pendingTurns[storyId]) return;
+  if (!storyId || pendingTurns[storyId] || activeTurnEditor || editorSaving) return;
   const inputId = currentMode === 'roleplay' ? 'playerInput' : 'readerInput';
   const record = {storyId, payload: {
     request_id: crypto.randomUUID(), mode: currentMode,

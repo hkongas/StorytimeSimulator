@@ -18,6 +18,21 @@ CREATE TABLE IF NOT EXISTS turn_receipts (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS turn_snapshots (
+    turn_id INTEGER PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    before_json TEXT NOT NULL,
+    after_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prose_edits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    turn_id INTEGER NOT NULL,
+    old_prose TEXT NOT NULL,
+    new_prose TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS character_observations (
     character_id TEXT PRIMARY KEY,
     content TEXT NOT NULL
@@ -121,6 +136,8 @@ CREATE TABLE IF NOT EXISTS api_calls (
     reasoning_tokens INTEGER DEFAULT 0,
     total_tokens INTEGER DEFAULT 0,
     cost_usd REAL DEFAULT 0.0,
+    cached_tokens INTEGER DEFAULT 0,
+    cost_known BOOLEAN DEFAULT 0,
     status TEXT DEFAULT 'success',
     error_message TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP

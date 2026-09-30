@@ -12,6 +12,18 @@ class TurnConflictError(ValueError):
     pass
 
 
+STATE_TABLES = ("characters", "character_memories", "character_observations", "scenes", "story_runtime", "chronicle_entries")
+
+
+async def _capture_state(connection) -> dict:
+    state = {}
+    for table in STATE_TABLES:
+        async with connection.execute(f"SELECT * FROM {table} ORDER BY rowid") as cursor:
+            columns = [column[0] for column in cursor.description]
+            state[table] = [dict(zip(columns, row)) for row in await cursor.fetchall()]
+    return state
+
+
 async def get_revision(story_id: str) -> int:
     await db.init_story_db(story_id)
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
@@ -48,8 +60,10 @@ async def seed_observations(story_id: str, observations: dict[str, str]):
 async def get_receipt(story_id: str, request_id: str, fingerprint: str | None = None) -> TurnResponse | None:
     await db.init_story_db(story_id)
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
-        async with connection.execute("SELECT fingerprint, response_json FROM turn_receipts WHERE request_id = ?", (request_id,)) as cursor:
+        async with connection.execute("SELECT fingerprint, response_json, payload_json FROM turn_receipts WHERE request_id = ?", (request_id,)) as cursor:
             row = await cursor.fetchone()
+    if row and json.loads(row[2]).get("rolled_back"):
+        raise TurnConflictError("Vuoro on kumottu. Kayta uutta pyyntotunnistetta.")
     if row and fingerprint is not None and row[0] != fingerprint:
         raise TurnConflictError("Samaa pyyntotunnistetta ei voi kayttaa eri sisallolle.")
     return TurnResponse.model_validate_json(row[1]) if row else None
@@ -70,6 +84,7 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                 current_id = (await cursor.fetchone())[0]
             if current_id != expected_last_id:
                 raise TurnConflictError("Tarina muuttui generoinnin aikana. Lataa tarina uudelleen.")
+            before = await _capture_state(connection)
             for character in characters:
                 values = character.model_dump(exclude={"created_at"})
                 values["known_locations"] = json.dumps(values["known_locations"])
@@ -89,7 +104,7 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                         "INSERT INTO character_memories (character_id, scene_index, memory_type, content, importance_score) VALUES (?, ?, 'observation', ?, 1)",
                         (character.id, turn.scene_id, observation)
                     )
-            await connection.execute(
+            inserted = await connection.execute(
                 "INSERT INTO scene_turns (scene_id, turn_index, acting_character_id, perceived_context, internal_monologue, character_action, director_prose, choices, image_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (turn.scene_id, turn.turn_index, turn.acting_character_id, turn.perceived_context, turn.internal_monologue, turn.character_action, turn.director_prose, json.dumps(turn.choices), turn.image_prompt)
             )
@@ -114,10 +129,89 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                 "INSERT INTO turn_receipts (request_id, fingerprint, response_json, payload_json) VALUES (?, ?, ?, ?)",
                 (response.request_id, fingerprint, response.model_dump_json(), json.dumps({"outcome": outcome.model_dump(), "audit": audit}))
             )
+            await connection.execute(
+                "INSERT INTO turn_snapshots VALUES (?, ?, ?, ?)",
+                (inserted.lastrowid, response.request_id, json.dumps(before), json.dumps(await _capture_state(connection)))
+            )
             await connection.commit()
         except BaseException:
             await connection.rollback()
             raise
+
+
+async def update_turn_prose(story_id: str, turn_id: int, new_prose: str, expected_revision: int):
+    if not new_prose.strip():
+        raise ValueError("Proosa ei voi olla tyhja.")
+    await db.init_story_db(story_id)
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                if (await cursor.fetchone())[0] != expected_revision:
+                    raise TurnConflictError("Tarina muuttui. Lataa se uudelleen ennen muokkausta.")
+            async with connection.execute("SELECT director_prose FROM scene_turns WHERE id = ?", (turn_id,)) as cursor:
+                previous = await cursor.fetchone()
+            if not previous:
+                raise ValueError("Vuoroa ei loydy.")
+            await connection.execute(
+                "INSERT INTO prose_edits (turn_id, old_prose, new_prose) VALUES (?, ?, ?)",
+                (turn_id, previous[0], new_prose)
+            )
+            cursor = await connection.execute(
+                "UPDATE scene_turns SET director_prose = ? WHERE id = ?", (new_prose, turn_id)
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Vuoroa ei loydy.")
+            await connection.execute("UPDATE story_meta SET updated_at = CURRENT_TIMESTAMP")
+            await connection.commit()
+        except BaseException:
+            await connection.rollback()
+            raise
+    await rebuild_exports(story_id)
+
+
+async def rollback_last_turn(story_id: str, expected_revision: int):
+    await db.init_story_db(story_id)
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                if (await cursor.fetchone())[0] != expected_revision:
+                    raise TurnConflictError("Tarina muuttui. Lataa se uudelleen ennen kumoamista.")
+            async with connection.execute("SELECT turn_id, request_id, before_json, after_json FROM turn_snapshots WHERE turn_id = (SELECT MAX(id) FROM scene_turns)") as cursor:
+                snapshot = await cursor.fetchone()
+            if not snapshot:
+                raise TurnConflictError("Vuorolla ei ole palautuspistetta. Vanhoja vuoroja tai aloitusta ei voi kumota.")
+            if await _capture_state(connection) != json.loads(snapshot[3]):
+                raise TurnConflictError("Vuoron jalkeen on muokattu tarinan tilaa. Kumoaminen poistaisi nama muutokset.")
+            before = json.loads(snapshot[2])
+            await connection.execute("DELETE FROM scene_turns WHERE id = ?", (snapshot[0],))
+            for table in reversed(STATE_TABLES):
+                await connection.execute(f"DELETE FROM {table}")
+            for table in STATE_TABLES:
+                for row in before[table]:
+                    columns = list(row)
+                    await connection.execute(
+                        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for column in columns)})",
+                        tuple(row.values())
+                    )
+            await connection.execute("DELETE FROM turn_snapshots WHERE turn_id = ?", (snapshot[0],))
+            await connection.execute("UPDATE turn_receipts SET payload_json = ? WHERE request_id = ?",
+                                     (json.dumps({"rolled_back": True}), snapshot[1]))
+            await connection.execute("UPDATE story_meta SET updated_at = CURRENT_TIMESTAMP")
+            await connection.commit()
+        except BaseException:
+            await connection.rollback()
+            raise
+    await rebuild_exports(story_id)
+
+
+async def can_rollback(story_id: str) -> bool:
+    await db.init_story_db(story_id)
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute("SELECT after_json FROM turn_snapshots WHERE turn_id = (SELECT MAX(id) FROM scene_turns)") as cursor:
+            row = await cursor.fetchone()
+        return bool(row) and await _capture_state(connection) == json.loads(row[0])
 
 
 async def rebuild_exports(story_id: str):

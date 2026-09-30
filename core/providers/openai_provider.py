@@ -12,6 +12,15 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, api_key: str, base_url: Optional[str] = None):
         super().__init__(api_key=api_key, base_url=base_url or "https://api.openai.com/v1")
 
+    def _build_payload(self, messages, model, temperature, max_tokens, reasoning_effort):
+        is_reasoning = model.startswith("o1") or model.startswith("o3") or model.startswith("gpt-5")
+        payload = {"model": model, "messages": messages, "temperature": 1.0 if is_reasoning else temperature}
+        if max_tokens:
+            payload["max_completion_tokens" if is_reasoning else "max_tokens"] = max_tokens
+        if is_reasoning and reasoning_effort and reasoning_effort.lower() in ["low", "medium", "high"]:
+            payload["reasoning_effort"] = reasoning_effort.lower()
+        return payload
+
     async def chat_completion(
         self,
         messages: List[Dict[str, str]],
@@ -32,21 +41,7 @@ class OpenAIProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}"
         }
 
-        is_reasoning = model.startswith("o1") or model.startswith("o3") or model.startswith("gpt-5")
-        token_param = "max_completion_tokens" if is_reasoning else "max_tokens"
-        target_temp = 1.0 if is_reasoning else temperature
-
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": target_temp
-        }
-
-        if max_tokens:
-            payload[token_param] = max_tokens
-
-        if is_reasoning and reasoning_effort and reasoning_effort.lower() in ["low", "medium", "high"]:
-            payload["reasoning_effort"] = reasoning_effort.lower()
+        payload = self._build_payload(messages, model, temperature, max_tokens, reasoning_effort)
 
         if response_format:
             payload["response_format"] = response_format
@@ -76,22 +71,8 @@ class OpenAIProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}"
         }
 
-        is_reasoning = model.startswith("o1") or model.startswith("o3") or model.startswith("gpt-5")
-        token_param = "max_completion_tokens" if is_reasoning else "max_tokens"
-        target_temp = 1.0 if is_reasoning else temperature
-
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": target_temp,
-            "stream": True
-        }
-
-        if max_tokens:
-            payload[token_param] = max_tokens
-
-        if is_reasoning and reasoning_effort and reasoning_effort.lower() in ["low", "medium", "high"]:
-            payload["reasoning_effort"] = reasoning_effort.lower()
+        payload = self._build_payload(messages, model, temperature, max_tokens, reasoning_effort)
+        payload["stream"] = True
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", endpoint, headers=headers, json=payload) as response:

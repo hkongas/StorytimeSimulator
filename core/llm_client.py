@@ -8,6 +8,7 @@ from core.providers import (
     XAIProvider,
     AzureProvider,
     OpenAIProvider,
+    GeminiProvider,
     OpenRouterProvider,
     CustomProvider
 )
@@ -55,6 +56,8 @@ class LLMClient:
             key = self.api_key or settings.OPENAI_API_KEY
             url = self.base_url or "https://api.openai.com/v1"
             self._provider_instance = OpenAIProvider(api_key=key, base_url=url)
+        elif p_name == "gemini":
+            self._provider_instance = GeminiProvider(api_key=self.api_key or settings.GEMINI_API_KEY, base_url=self.base_url)
         elif p_name == "openrouter":
             key = self.api_key or settings.OPENROUTER_API_KEY
             url = self.base_url or "https://openrouter.ai/api/v1"

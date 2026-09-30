@@ -1,6 +1,8 @@
 import json
 import asyncio
 import shutil
+import sqlite3
+from contextlib import closing
 import aiosqlite
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -37,20 +39,33 @@ async def _initialize_story_db(story_id: str):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         schema_sql = f.read()
+    required_tables = {"story_revision", "story_runtime", "turn_receipts", "turn_snapshots", "prose_edits",
+                       "character_observations", "story_meta", "chronicle_entries", "characters",
+                       "character_memories", "scenes", "scene_turns", "api_calls"}
+    with closing(sqlite3.connect(":memory:")) as validation:
+        validation.executescript(schema_sql)
+        schema_tables = {row[0] for row in validation.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if not required_tables <= schema_tables:
+        missing = ", ".join(sorted(required_tables - schema_tables))
+        raise ValueError(f"Tietokannan skeematiedosto on puutteellinen: {missing}. Tarkista schema.sql ja pilvisynkronointi.")
 
     async with aiosqlite.connect(db_path) as db:
         async with db.execute("PRAGMA user_version") as cursor:
             version = (await cursor.fetchone())[0]
-        if version >= 4:
-            return
-        backup = db_path.with_suffix(".pre-v4.db")
+        if version >= 5:
+            async with db.execute("PRAGMA table_info(api_calls)") as cursor:
+                log_columns = {row[1] for row in await cursor.fetchall()}
+            async with db.execute("SELECT name FROM sqlite_master WHERE type = 'table'") as cursor:
+                existing_tables = {row[0] for row in await cursor.fetchall()}
+            if required_tables <= existing_tables and {"cached_tokens", "cost_known"} <= log_columns:
+                return
+        backup = db_path.with_suffix(".pre-v5.db" if version >= 4 else ".pre-v4.db")
         async with db.execute("SELECT name FROM sqlite_master WHERE name = 'story_meta'") as cursor:
             existing = await cursor.fetchone()
         if existing and not backup.exists():
             async with aiosqlite.connect(backup) as destination:
                 await db.backup(destination)
-        await db.executescript(schema_sql)
-        await db.commit()
+        await db.executescript("BEGIN IMMEDIATE;\n" + schema_sql)
 
         # Migraatiotarkistukset olemassa oleville tauluille
         async def add_column_if_missing(table: str, column: str, col_type: str):
@@ -81,7 +96,7 @@ async def _initialize_story_db(story_id: str):
                     f"CREATE TRIGGER IF NOT EXISTS revision_{table}_{operation.lower()} AFTER {operation} ON {table} BEGIN UPDATE story_revision SET revision = revision + 1 WHERE id = 1; END"
                 )
         await db.execute("CREATE INDEX IF NOT EXISTS memories_by_character ON character_memories(character_id, id)")
-        await db.execute("PRAGMA user_version = 4")
+        await db.execute(f"PRAGMA user_version = {max(version, 5)}")
         await db.commit()
 
 # --- Tarinan metatiedot ---

@@ -1,3 +1,8 @@
+.turn-editor { width: 100%; }
+.prose-editor-input { width: 100%; min-height: 280px; resize: vertical; box-sizing: border-box; line-height: 1.65; }
+.turn-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.turn-editor-actions button { white-space: normal; }
+.edit-turn-btn { flex: 0 0 32px; width: 32px; height: 32px; }
 /* Tarinamoottori – Tyylitiedosto (v3.0 Modern UI) */
 
 :root {

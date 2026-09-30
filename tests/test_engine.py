@@ -176,6 +176,50 @@ async def test_full_story_cycle():
     print("\n[OK] Kaikki testit läpäisty onnistuneesti!\n")
 
 class ProviderTests(unittest.TestCase):
+    def test_azure_completion_budget_ignores_deployment_alias(self):
+        from core.providers import AzureProvider
+        provider = AzureProvider("test", "https://example.services.ai.azure.com/openai/v1/")
+        for model in ("gpt-6-luna", "my-writer-deployment", "gpt-4o"):
+            payload = provider._build_payload([], model, 0.7, 32000, "medium", True)
+            self.assertEqual(payload["max_completion_tokens"], 32000)
+            self.assertNotIn("max_tokens", payload)
+        payload = provider._build_payload([], "gpt-6-luna", 0.7, 32000, "medium", True)
+        self.assertEqual(payload["temperature"], 1.0)
+        self.assertEqual(payload["reasoning_effort"], "medium")
+        self.assertEqual(provider._build_payload([], "gpt-4o", 0.7, 4000, None, False)["max_tokens"], 4000)
+
+    def test_azure_endpoint_modes(self):
+        from core.providers import AzureProvider
+        provider = AzureProvider("test", "https://example.openai.azure.com/openai/v1/", deployment_name="ignored")
+        endpoint, headers, v1 = provider._resolve_endpoint_and_headers("writer-deployment")
+        self.assertEqual(endpoint, "https://example.openai.azure.com/openai/v1/chat/completions")
+        self.assertTrue(v1)
+        self.assertEqual(provider._build_payload([], "writer-deployment", 0.7, 100, None, v1)["model"], "writer-deployment")
+        provider = AzureProvider("test", "https://example.openai.azure.com/", deployment_name="shared")
+        self.assertIn("/deployments/shared/chat/completions?api-version=", provider._resolve_endpoint_and_headers("writer")[0])
+        provider.deployment_name = ""
+        self.assertIn("/deployments/writer/chat/completions?api-version=", provider._resolve_endpoint_and_headers("writer")[0])
+        provider.base_url = "https://example.openai.azure.com/openai/deployments/writer"
+        with self.assertRaises(ValueError):
+            provider._resolve_endpoint_and_headers("writer")
+
+    def test_gemini_payload_and_routing(self):
+        from core.providers import GeminiProvider, OpenAIProvider
+        provider = LLMClient(provider="gemini", api_key="test")._get_provider()
+        self.assertIsInstance(provider, GeminiProvider)
+        self.assertEqual(provider.base_url, "https://generativelanguage.googleapis.com/v1beta/openai")
+        payload = provider._build_payload([], "gemini-2.5-flash-lite", 0.7, 1200, "none")
+        self.assertEqual(payload["reasoning_effort"], "none")
+        self.assertEqual(payload["max_tokens"], 1200)
+        self.assertEqual(payload["temperature"], 0.7)
+        with self.assertRaises(ValueError):
+            provider._build_payload([], "gemini-2.5-pro", 0.7, 1200, "none")
+        with self.assertRaises(ValueError):
+            provider._build_payload([], "gemini-3.5-flash-lite", 0.7, 1200, "none")
+        openai = OpenAIProvider("test")._build_payload([], "gpt-5", 0.7, 1200, "high")
+        self.assertEqual(openai["max_completion_tokens"], 1200)
+        self.assertEqual(openai["temperature"], 1.0)
+
     def test_context_budget_prevents_oversized_request(self):
         with self.assertRaises(ValueError):
             LLMClient()._check_context([{"role": "user", "content": "x" * (settings.MAX_INPUT_TOKENS * 3 + 1)}])
@@ -195,6 +239,73 @@ class ProviderTests(unittest.TestCase):
         payload["choices"][0]["finish_reason"] = "length"
         with self.assertRaises(TruncatedResponseError):
             provider._read_response(payload, "test-model", 1.5)
+
+
+class AzureTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unsupported_parameters_adapt_for_deployment_alias(self):
+        import json
+        import httpx
+        from datetime import timedelta
+        from unittest.mock import patch
+        from core.providers import AzureProvider
+        requests = []
+        def respond(request):
+            payload = json.loads(request.content)
+            requests.append(payload)
+            if "max_tokens" in payload:
+                return httpx.Response(400, json={"error": {"param": "max_tokens", "code": "unsupported_parameter",
+                    "message": "Use max_completion_tokens instead."}})
+            if "temperature" in payload:
+                return httpx.Response(400, json={"error": {"param": "temperature", "code": "unsupported_value",
+                    "message": "Only the default value is supported."}})
+            response = httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]})
+            response.elapsed = timedelta(milliseconds=10)
+            return response
+        client_type = httpx.AsyncClient
+        def make_client(**kwargs):
+            return client_type(transport=httpx.MockTransport(respond), **kwargs)
+        provider = AzureProvider("test", "https://example.openai.azure.com/", deployment_name="writer-alias")
+        with patch("core.providers.azure_provider.httpx.AsyncClient", side_effect=make_client):
+            self.assertEqual(await provider.json_completion([], "writer-alias", max_tokens=32000), {})
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(requests[-1]["max_completion_tokens"], 32000)
+        self.assertNotIn("temperature", requests[-1])
+
+
+class GeminiTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_schema_usage_and_truncation(self):
+        import json
+        import httpx
+        from datetime import timedelta
+        from unittest.mock import patch
+        from core.providers import GeminiProvider, TruncatedResponseError
+        requests = []
+        finish_reason = "stop"
+        def respond(request):
+            requests.append(json.loads(request.content))
+            self.assertEqual(str(request.url), "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+            self.assertEqual(request.headers["authorization"], "Bearer test")
+            response = httpx.Response(200, json={
+                "choices": [{"finish_reason": finish_reason, "message": {"content": '{"action": "wait"}'}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120,
+                          "prompt_tokens_details": {"cached_tokens": 50}}
+            })
+            response.elapsed = timedelta(milliseconds=10)
+            return response
+        client_type = httpx.AsyncClient
+        def make_client(**kwargs):
+            return client_type(transport=httpx.MockTransport(respond), **kwargs)
+        provider = GeminiProvider("test")
+        schema = {"type": "json_schema", "json_schema": {"name": "action", "schema": {"type": "object"}}}
+        with patch("core.providers.openai_provider.httpx.AsyncClient", side_effect=make_client):
+            result = await provider.json_completion([], "gemini-2.5-flash-lite", max_tokens=1200, reasoning_effort="none", json_schema=schema)
+            self.assertEqual(result, {"action": "wait"})
+            self.assertEqual(requests[-1]["response_format"], schema)
+            self.assertEqual(provider.last_usage["cached_tokens"], 50)
+            self.assertFalse(provider.last_usage["cost_known"])
+            finish_reason = "length"
+            with self.assertRaises(TruncatedResponseError):
+                await provider.json_completion([], "gemini-2.5-flash-lite")
 
 
 class RecordingLLM(MockLLMClient):
@@ -235,6 +346,51 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         await db.init_story_db("test")
         self.assertEqual((await db.get_story_meta("test")).title, "Original")
 
+    async def test_api_logging_in_fresh_database(self):
+        await db.log_api_call("test", "director", "azure-test", 0.1,
+                              prompt_tokens=100, cached_tokens=50, cost_known=True, cost_usd=0.01)
+        logs = await db.get_api_calls_for_story("test")
+        self.assertEqual(logs[0]["cached_tokens"], 50)
+        self.assertTrue(logs[0]["cost_known"])
+
+    async def test_incomplete_schema_is_rejected_before_database_creation(self):
+        from unittest.mock import patch, mock_open
+        with patch("database.db.open", mock_open(read_data="CREATE TABLE story_meta (id TEXT);")):
+            with self.assertRaisesRegex(ValueError, "skeematiedosto on puutteellinen"):
+                await db.init_story_db("incomplete")
+        self.assertFalse(db.get_db_path("incomplete").exists())
+
+    async def test_current_version_repairs_missing_scenes_table(self):
+        import aiosqlite
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        async with aiosqlite.connect(db.get_db_path("test")) as connection:
+            await connection.execute("DROP TABLE scenes")
+            await connection.commit()
+        await db.init_story_db("test")
+        scene_id = await db.create_scene("test", Scene(location="Room", scene_goal="Test"))
+        self.assertIsNotNone(scene_id)
+        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v5.db").exists())
+        self.assertEqual((await db.get_story_meta("test")).title, "Original")
+
+    async def test_current_version_repairs_missing_log_columns(self):
+        import aiosqlite
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        await db.log_api_call("test", "director", "azure-test", 0.1)
+        async with aiosqlite.connect(db.get_db_path("test")) as connection:
+            await connection.execute("ALTER TABLE api_calls DROP COLUMN cost_known")
+            await connection.execute("ALTER TABLE api_calls DROP COLUMN cached_tokens")
+            await connection.commit()
+        await db.log_api_call("test", "director", "azure-test", 0.2,
+                              cached_tokens=10, cost_known=False)
+        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v5.db").exists())
+        logs = await db.get_api_calls_for_story("test")
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(logs[0]["cached_tokens"], 10)
+        self.assertFalse(logs[0]["cost_known"])
+        self.assertEqual((await db.get_story_meta("test")).title, "Original")
+        await db.init_story_db("test")
+        self.assertEqual(len(await db.get_api_calls_for_story("test")), 2)
+
     async def test_legacy_migration_keeps_backup(self):
         import aiosqlite
         await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
@@ -265,6 +421,76 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         result = await engine.initialize_new_story(StoryInitRequest(title="Test"))
         model.calls.clear()
         return model, engine, result["story_id"]
+
+    async def test_editor_and_rollback_restore_state(self):
+        from database import turn_store
+        import aiosqlite
+        model, engine, story_id = await self.create_recorded_story()
+        async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+            before = await turn_store._capture_state(connection)
+        await engine.advance_turn(story_id, mode="simulation", request_id="undo-test")
+        turns = await db.get_all_story_turns(story_id)
+        revision = await turn_store.get_revision(story_id)
+        await turn_store.update_turn_prose(story_id, turns[-1].id, "Edited prose", revision)
+        self.assertIn("Edited prose", (db.get_story_dir(story_id) / "story.md").read_text(encoding="utf-8"))
+        with self.assertRaises(turn_store.TurnConflictError):
+            await turn_store.update_turn_prose(story_id, turns[-1].id, "Stale", revision)
+        await turn_store.rollback_last_turn(story_id, await turn_store.get_revision(story_id))
+        async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+            self.assertEqual(await turn_store._capture_state(connection), before)
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 1)
+        with self.assertRaises(turn_store.TurnConflictError):
+            await turn_store.get_receipt(story_id, "undo-test")
+        with self.assertRaises(turn_store.TurnConflictError):
+            await turn_store.rollback_last_turn(story_id, await turn_store.get_revision(story_id))
+
+    async def test_undo_preserves_later_state_edits(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        await engine.advance_turn(story_id)
+        await db.update_character_state(story_id, "char_mira", "User edit", "Alert")
+        with self.assertRaises(turn_store.TurnConflictError):
+            await turn_store.rollback_last_turn(story_id, await turn_store.get_revision(story_id))
+        self.assertFalse(await turn_store.can_rollback(story_id))
+        self.assertEqual((await db.get_character(story_id, "char_mira")).physical_state, "User edit")
+
+    async def test_editor_reaches_director_and_undo_restores_chapter(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        original_scene = await db.get_active_scene(story_id)
+        opening = (await db.get_all_story_turns(story_id))[-1]
+        await turn_store.update_turn_prose(story_id, opening.id, "EDITED_CONTEXT_MARKER", await turn_store.get_revision(story_id))
+        original = model.json_completion
+        async def end_chapter(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if "prose" in result:
+                result["chapter_end"] = True
+            return result
+        model.json_completion = end_chapter
+        await engine.advance_turn(story_id, mode="simulation")
+        director_calls = str([messages for role, messages in model.calls if role == "director"])
+        self.assertIn("EDITED_CONTEXT_MARKER", director_calls)
+        self.assertTrue(all("EDITED_CONTEXT_MARKER" not in str(messages) for role, messages in model.calls if role == "character"))
+        self.assertNotEqual((await db.get_active_scene(story_id)).id, original_scene.id)
+        await turn_store.rollback_last_turn(story_id, await turn_store.get_revision(story_id))
+        self.assertEqual((await db.get_active_scene(story_id)).id, original_scene.id)
+        self.assertEqual((await db.get_all_story_turns(story_id))[-1].director_prose, "EDITED_CONTEXT_MARKER")
+
+    async def test_v4_editor_migration_keeps_backup(self):
+        import aiosqlite
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        async with aiosqlite.connect(db.get_db_path("test")) as connection:
+            await connection.execute("DROP TABLE turn_snapshots")
+            await connection.execute("DROP TABLE prose_edits")
+            await connection.execute("PRAGMA user_version = 4")
+            await connection.commit()
+        await db.init_story_db("test")
+        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v5.db").exists())
+        async with aiosqlite.connect(db.get_db_path("test")) as connection:
+            async with connection.execute("PRAGMA user_version") as cursor:
+                self.assertEqual((await cursor.fetchone())[0], 5)
+            await connection.execute("SELECT * FROM turn_snapshots")
+        self.assertEqual((await db.get_story_meta("test")).title, "Original")
 
     async def test_modes_information_boundaries_and_replay(self):
         model, engine, story_id = await self.create_recorded_story()
