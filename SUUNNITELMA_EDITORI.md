@@ -156,3 +156,37 @@ Suunnittelusuositus 30.9.2026. Monirivinen syöttökenttä ja uuden oman jatkoka
 - Synkronoimaton oma teksti on luonnos, ei hahmojen tietolähde. Agenttien jatko estetään, kunnes muutokset on hyväksytty tai hylätty.
 
 Suositeltu toteutusjärjestys: oma jatko ja tilasynkronointi; pelaajan näkökulma ja vuorojen näkökulmatiedot; luvut ja sisällysluettelo; maailman kopiointi; valikoiva taustasimulaatio ja pyynnöstä tuotettavat hahmopäiväkirjat.
+
+## 6. Vuoroarkkitehtuurin Uudistus
+
+Arvio 1.10.2026. Nykyinen moottori valitsee hahmot ennen kertojakutsua edellisen vuoron päätöslistasta. Maailmanmuutos vaikuttaa vasta loppukoontiin. Tämä tekee hahmojen aikeista vanhaan tilanteeseen perustuvia, kun käyttäjän syöte muuttaa tilanteen olennaisesti. Tilat vaikuttavat koodissa kutsuvalintaan, mutta kaikkien tilojen yhteinen pitkä prompti sisältää ristiriitaisia yleisohjeita eikä tee käyttäjäohjauksen prioriteettia riittävän näkyväksi.
+
+### Suositeltu yksi sykli
+
+1. Käyttäjän syöte luokitellaan: pelaajan yritys, kirjailijan toive, sitova maailmanmuutos tai jo hyväksytty oma tapahtumateksti. Toivetta ei käsitellä hahmon tietona eikä pelaajan yritystä onnistuneena tapahtumana.
+2. Kertoja suunnittelee nykyisen vuoron ennen hahmokutsuja: sovellettavat maailmanmuutokset, uudet hahmot, tilat ja läsnäolo, havaitsijoille rajatut tapahtumat, kutsuttavat hahmot sekä vuoron tavoite. Kaikki tunnisteet ja kentät validoidaan paikallisesti.
+3. Hahmot saavat lähtötilansa ja vain omat havaintonsa suunnitelman jo toteutuneista tapahtumista. Salainen tuleva käänne tai raakamuotoinen kirjailijaohje ei mene niille. Kuolleet ja toimintakyvyttömät eivät päätä aikeita.
+4. Kertoja ratkaisee aikeet suunnitelman rajoissa ja palauttaa tapahtumat sekä yhteisen tilan. Kirjailijatoiveen vaikutus näkyy tarinassa ilman erillistä käsittelyilmoitusta. Romaanissa toive painottuu enemmän, simulaatiossa itsenäiset motiivit ja syy-seuraussuhteet painottuvat enemmän.
+5. Tarinateksti muodostetaan hyväksytyistä tapahtumista ja tilan mukaisesta näkökulmasta. Kaikki välivaiheet ovat muistissa; koko vuoro hyväksytään yhdessä revision tarkistavassa transaktiossa ja palautuslokissa.
+
+Toteutettu 1.10.2026: yksi suunnittelukutsu ennen hahmoja kaikissa vuoroissa, tilakohtaiset ohjeet, suunnitelman tapahtumien tietorajaus sekä yksi atominen loppukoonti. Uusien hahmojen luonti validoidaan ennen heidän kutsumistaan. Kertojan pysäytyssignaali katkaisee automaattijatkon. Nopeaa polkua ilman suunnittelukutsua tai useita sisäisiä syklejä ei vielä ole toteutettu.
+
+### Tilakohtaiset promptit
+
+- Yhteinen vakaa sääntöosa ja yksi valitun tilan ohje, ei kaikkien ENGINE MODES -kuvauksia joka kutsuun.
+- Romaani: merkityksellinen eteneminen, siirtymät ja toivottu tekstimäärä; itsenäinen päätös vain aidossa haarautumiskohdassa. Stop ennen päätöstä ei saa tarkoittaa pysähtymistä joka askeleella.
+- Simulaatio: rajattu tilanne ja rinnakkaiset aikeet, joita kertoja ratkaisee eikä vain referoi.
+- Roolipeli: pelaajan yritys säilyy, seuraava valinta palautetaan pelaajalle ja näkyvä proosa rajataan hänen tietoihinsa.
+- Hahmon persoonallisuus on melko vakaa; fyysinen tila, muistit ja havainnot ovat muuttuvaa syötedataa. Poista turhat esimerkkirungot, ristiriitaiset toisto-ohjeet ja käyttämättömät kentät erillisessä yhteensopivuuden testaavassa muutoksessa.
+
+### Silmukat ja kustannukset
+
+Ensimmäinen toteutus käyttää yhtä suunnittelu–hahmot–ratkaisu-sykliä, ei rajoittamatonta sisäistä simulaatiota. Myöhempi valinnainen jatko voi käyttää esimerkiksi 1–3 sisäistä sykliä. Uusi sykli tarvitaan vain uuden päätöskohdan tai toisen hahmon toiminnan havaittavan seurauksen vuoksi, ei saman ratkaisemattoman repliikin toistamiseksi. Jokaisella syklillä on oltava tapahtuma- tai tilamuutos, muuten pysähdytään.
+
+Katkaisuehdot: pelaajan seuraava päätös, vuoro-/sykliraja, kutsumäärä, tokenbudjetti, aikaraja, keskeytys ja toiston tunnistus. Todellinen dollarikatto vaatii hintatiedot; tokenkatto on käytettävissä myös ilman palvelun raportoimaa hintaa. Automaattijatkon pitää kunnioittaa kertojan pysäytyssignaalia. Lyhyiden kappaleiden näkyvä jatko on helpompi seurata ja keskeyttää kuin pitkä näkymätön silmukka.
+
+### Välimuisti ja todentaminen
+
+Vakaa alkuosa: yhteiset säännöt, vaihe/tila, kieli ja sävy. Muuttuva loppuosa: käyttäjäsyöte, tilat, muistit ja havainnot. Vältä vaihtuvia nimiä ja tilatietoja ohjeen alussa, pidä järjestys ja sarjoitus vakaina. Tarjoajakohtainen prompt caching voi alentaa toistuvien syötetokenien hintaa ja nopeuttaa syötteen käsittelyä; se ei poista uusien vastaustokenien generointia eikä takaa osumaa. Mittaa cached_tokens, syötekoko, p50/p95-viive ja kokonaiskulut ennen väitteitä säästöistä.
+
+Regressiot: maailmanmuutoksen havaittava seuraus on hahmolla ennen päätöstä; salainen käänne ei vuoda; uudet hahmot saavat rajatun lähtötiedon; kuollut ei tee päätöstä; kirjailijatoive vaikuttaa tilan mukaan tarinan suuntaan; välivaiheen virhe ei muuta tietokantaa; kierros etenee eikä toista samaa päätöstä; pelaajan valintaa ei ohiteta. Oikeiden mallien laatukokeet pidetään erillään valemallien tietovirta- ja tallennustesteistä.

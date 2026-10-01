@@ -67,6 +67,15 @@ class MockLLMClient(LLMClient):
                     "opening_prose": "Yön hiljaisuus laskeutui metsän ylle kuin raskas samettiverho. Eerik seisoi raunioiden kynnyksellä ja katseli sumun halki kohoavia torneja."
                 }
             }
+        elif schema_name == "turn_plan":
+            import json
+            inputs = json.loads(messages[1]["content"])
+            present = inputs["scene"]["active_character_ids"]
+            capable = [character["id"] for character in inputs["characters"] if character["id"] in present and character["status"] == "active"
+                   and not (inputs["mode"] == "roleplay" and character["is_player_controlled"])]
+            decisions = capable if inputs["mode"] != "novel" else [identifier for identifier in capable if identifier in inputs["runtime"].get("decision_character_ids", [])]
+            return {"events": [], "active_character_ids": present, "decision_character_ids": decisions,
+                "scene_goal": inputs["scene"]["scene_goal"], "direction": "Resolve the next meaningful beat."}
         elif schema_name == "authored_reconciliation":
             return {
                 "prose": "Model must not replace user prose", "summary": "A bell rang.",
@@ -83,6 +92,8 @@ class MockLLMClient(LLMClient):
                 "updated_mental_state": "Varautunut ja jännittynyt",
                 "new_memory": "Kohtasin toisen henkilön vanhoilla raunioilla sumuisena yönä."
             }
+        elif schema_name == "player_view":
+            return {"prose": "PRIVATE_VIEW_TEXT", "recap": "PRIVATE_VIEW_RECAP", "chapter_title": "Oma havainto", "choices": ["Tarkkaile"]}
         elif schema_name == "prose_turn":
             return {
             "events": [{"description": "Eerik ja Mira kohtaavat raunioilla.", "witnesses": ["char_eerik", "char_mira"]}],
@@ -430,6 +441,18 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         model.calls.clear()
         return model, engine, result["story_id"]
 
+    async def test_roleplay_opening_has_private_reading_view(self):
+        from database import turn_store
+        model = RecordingLLM()
+        engine = StoryEngine(model)
+        result = await engine.initialize_new_story(StoryInitRequest(title="Private opening", user_role="roleplay"))
+        sid = result["story_id"]
+        metadata = await turn_store.get_reading_metadata(sid)
+        opening = next(iter(metadata.values()))
+        self.assertEqual(opening["player_views"]["char_eerik"]["prose"], "PRIVATE_VIEW_TEXT")
+        await engine.advance_turn(sid, mode="roleplay", user_input="Tarkkailen")
+        self.assertEqual((await turn_store.get_reading_metadata(sid))[next(iter(metadata))], opening)
+
     async def test_editor_and_rollback_restore_state(self):
         from database import turn_store
         import aiosqlite
@@ -544,6 +567,102 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await turn_store.get_revision(story_id), revision)
         self.assertEqual(engine.authored_previews, {})
 
+    async def test_turn_recovery_journal_and_disk_verification(self):
+        from database import turn_store
+        import json
+        import aiosqlite
+        model, engine, story_id = await self.create_recorded_story()
+        response = await engine.advance_turn(story_id, request_id="journal-test")
+        directory = turn_store.get_recovery_dir(story_id)
+        try:
+            import hashlib
+            journal_path = directory / f"{hashlib.sha256(response.request_id.encode()).hexdigest()}.json"
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+            self.assertEqual(journal["response"]["request_id"], response.request_id)
+            self.assertEqual(journal["outcome"]["prose"], response.director_prose)
+            self.assertIn("events", journal["outcome"])
+            await turn_store.verify_committed_turn(story_id, response)
+            async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+                await connection.execute("DELETE FROM scene_turns WHERE id = (SELECT MAX(id) FROM scene_turns)")
+                await connection.commit()
+            with self.assertRaises(turn_store.TurnConflictError):
+                await turn_store.verify_committed_turn(story_id, response)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    async def test_planning_observation_precedes_decision(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        original = model.json_completion
+        async def plan_changes(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
+                result["events"] = [{"description": "VISIBLE_POWER_FAILURE", "witnesses": ["char_eerik"]}]
+                result["character_state_updates"] = [{"character_id": "char_mira", "status": "dead"}]
+                result["decision_character_ids"] = ["char_eerik"]
+                result["requires_player_input"] = True
+            elif kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "prose_turn":
+                result["character_state_updates"] = []
+            return result
+        model.json_completion = plan_changes
+        response = await engine.advance_turn(story_id, mode="simulation", director_guidance="SECRET_OVERRIDE")
+        character_calls = [str(messages) for role, messages in model.calls if role == "character"]
+        self.assertEqual(len(character_calls), 1)
+        self.assertIn("VISIBLE_POWER_FAILURE", character_calls[0])
+        self.assertNotIn("SECRET_OVERRIDE", character_calls[0])
+        self.assertTrue(response.requires_player_input)
+        self.assertIn("VISIBLE_POWER_FAILURE", await turn_store.get_observation(story_id, "char_eerik"))
+
+    async def test_private_intention_continuity_and_undo(self):
+        from database import turn_store
+        model, engine, sid = await self.create_recorded_story()
+        original = model.json_completion
+        generation = 1
+        async def changing_intention(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("role") == "character":
+                result["internal_monologue"] = f"PRIVATE_THOUGHT_{generation}"
+                result["action_and_speech"] = f"ATTEMPT_{generation}"
+            return result
+        model.json_completion = changing_intention
+        await engine.advance_turn(sid, mode="simulation")
+        previous = await turn_store.get_last_intention(sid, "char_eerik")
+        self.assertEqual(previous["character_id"], "char_eerik")
+        self.assertEqual(previous["internal_monologue"], "PRIVATE_THOUGHT_1")
+        model.calls.clear()
+        generation = 2
+        await engine.advance_turn(sid, mode="simulation")
+        latest = await turn_store.get_last_intention(sid, "char_eerik")
+        self.assertEqual(latest["internal_monologue"], "PRIVATE_THOUGHT_2")
+        self.assertEqual(latest["action_and_speech"], "ATTEMPT_2")
+        planning = next(messages for role, messages in model.calls
+                        if role == "director" and "previous_private_intentions" in messages[1]["content"])
+        self.assertIn("PRIVATE_THOUGHT_1", planning[1]["content"])
+        calls = [messages for role, messages in model.calls if role == "character"]
+        self.assertIn("YOUR PREVIOUS PRIVATE THOUGHT AND ATTEMPT", str(calls))
+        self.assertIn("PRIVATE_THOUGHT_1", str(calls))
+        self.assertNotIn("PRIVATE_THOUGHT_2", str(calls))
+        self.assertIn("not proof it succeeded", str(calls))
+        self.assertEqual(calls[0][0]["content"], calls[-1][0]["content"])
+        await turn_store.rollback_last_turn(sid, await turn_store.get_revision(sid))
+        self.assertEqual(await turn_store.get_last_intention(sid, "char_eerik"), previous)
+
+    async def test_invalid_plan_changes_nothing(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        original = model.json_completion
+        async def invalid_plan(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
+                result["decision_character_ids"] = ["unknown"]
+            return result
+        model.json_completion = invalid_plan
+        revision = await turn_store.get_revision(story_id)
+        with self.assertRaises(ValueError):
+            await engine.advance_turn(story_id)
+        self.assertEqual(await turn_store.get_revision(story_id), revision)
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 1)
+
     async def test_modes_information_boundaries_and_replay(self):
         model, engine, story_id = await self.create_recorded_story()
         scene = await db.get_active_scene(story_id)
@@ -555,7 +674,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await db.get_character(story_id, "char_mira")).status, "unconscious")
         model.calls.clear()
         await engine.advance_turn(story_id, mode="novel", user_input="READER_WISH", request_id="novel")
-        self.assertEqual([role for role, _ in model.calls], ["director"])
+        self.assertEqual([role for role, _ in model.calls], ["director", "director"])
         self.assertIn("READER_WISH", str(model.calls))
         model.calls.clear()
         results = await asyncio.gather(*[engine.advance_turn(story_id, mode="novel", user_input="READER_WISH", request_id="novel") for _ in range(2)])
@@ -563,6 +682,75 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, [])
         with self.assertRaises(ValueError):
             await engine.advance_turn(story_id, user_input="Different", request_id="novel")
+
+    async def test_reading_views_and_evolving_director_state(self):
+        import json
+        from database import turn_store
+        model, engine, sid = await self.create_recorded_story()
+        await db.set_player_character(sid, "char_eerik")
+        original = model.json_completion
+        async def evolving_state(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "prose_turn":
+                result.update(chapter_title="Kohtaaminen", director_plan="EVOLVING_PLAN", director_notes="CURRENT_NOTES",
+                              world_description="CHANGED_WORLD", character_state_updates=[])
+                result["events"] = [{"description": "VISIBLE_OUTCOME", "witnesses": ["char_eerik"]},
+                                    {"description": "SECRET_OFFSTAGE", "witnesses": []}]
+            return result
+        model.json_completion = evolving_state
+        await engine.advance_turn(sid, mode="simulation")
+        metadata = await turn_store.get_reading_metadata(sid)
+        self.assertEqual(list(metadata.values())[-1]["chapter_title"], "Kohtaaminen")
+        self.assertEqual(list(metadata.values())[-1]["player_views"]["char_eerik"]["prose"], "PRIVATE_VIEW_TEXT")
+        player_call = next(messages for role, messages in model.calls if "perceived_events" in messages[1]["content"])
+        self.assertIn("VISIBLE_OUTCOME", player_call[1]["content"])
+        self.assertNotIn("SECRET_OFFSTAGE", player_call[1]["content"])
+        self.assertNotIn("EVOLVING_PLAN", player_call[1]["content"])
+        self.assertNotIn("char_mira", player_call[1]["content"])
+        model.calls.clear()
+        await engine.advance_turn(sid, mode="simulation")
+        planning = next(messages for role, messages in model.calls if "previous_private_intentions" in messages[1]["content"])
+        inputs = json.loads(planning[1]["content"])
+        self.assertEqual(inputs["plot_arc"], "EVOLVING_PLAN")
+        self.assertEqual(inputs["notes"], "CURRENT_NOTES")
+        self.assertEqual(inputs["world_lore"], "CHANGED_WORLD")
+        await turn_store.rollback_last_turn(sid, await turn_store.get_revision(sid))
+        self.assertEqual(await turn_store.get_reading_metadata(sid), metadata)
+
+    async def test_player_marker_only_limits_roleplay(self):
+        import json
+        model, engine, story_id = await self.create_recorded_story()
+        await db.set_player_character(story_id, "char_eerik")
+        original = model.json_completion
+        async def omit_player(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            schema = kwargs.get("json_schema", {}).get("json_schema", {}).get("name")
+            if schema == "turn_plan":
+                result["decision_character_ids"] = ["char_mira"]
+            elif schema == "prose_turn":
+                result["character_state_updates"] = []
+            return result
+        model.json_completion = omit_player
+        await engine.advance_turn(story_id, mode="simulation")
+        calls = [messages for role, messages in model.calls if role == "character"]
+        self.assertEqual(len(calls), 2)
+        profiles = [json.loads(messages[1]["content"].split("[YOUR PRIVATE CHARACTER PROFILE]\n", 1)[1].split("\n[YOUR RECALLED MEMORIES]", 1)[0]) for messages in calls]
+        self.assertEqual({profile["id"] for profile in profiles}, {"char_eerik", "char_mira"})
+        self.assertTrue(all(not profile["is_player_controlled"] for profile in profiles))
+        self.assertTrue((await db.get_character(story_id, "char_eerik")).is_player_controlled)
+        model.calls.clear()
+        async def select_former_player(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
+                result["decision_character_ids"] = ["char_eerik"]
+            return result
+        model.json_completion = select_former_player
+        await engine.advance_turn(story_id, mode="novel")
+        self.assertEqual(len([role for role, messages in model.calls if role == "character"]), 1)
+        planning = next(messages for role, messages in model.calls if role == "director" and "previous_private_intentions" in messages[1]["content"])
+        self.assertTrue(all(not character["is_player_controlled"] for character in json.loads(planning[1]["content"])["characters"]))
+        synthesis = next(messages for role, messages in model.calls if role == "director" and "[CHARACTER DOSSIERS" in messages[1]["content"])
+        self.assertIn("NEVER in prose", synthesis[0]["content"])
 
     async def test_player_is_not_lost_among_many_characters(self):
         model, engine, story_id = await self.create_recorded_story()

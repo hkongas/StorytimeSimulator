@@ -123,4 +123,5 @@ class TurnResponse(BaseModel):
     spawned_characters: List[Character] = []
     story_text_snippet: str
     is_chapter_end: bool = False
+    requires_player_input: bool = False
     watchdog_note: Optional[str] = None

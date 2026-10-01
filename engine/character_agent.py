@@ -5,6 +5,7 @@ from core.types import Character, CharacterMemory
 from core.prompt_loader import prompt_loader
 from core.schemas import CharacterDecisionResponse, pydantic_to_json_schema
 import database.db as db
+from database import turn_store
 
 class CharacterAgent:
     """Yksittäistä tarinan hahmoa simuloiva agentti.
@@ -70,16 +71,22 @@ class CharacterAgent:
             character_memories=memory_text
         )
 
-        user_content = f"""
+        user_content = "[YOUR PRIVATE CHARACTER PROFILE]\n" + json.dumps(self.character.model_dump(), ensure_ascii=False)
+        user_content += "\n[YOUR RECALLED MEMORIES]\n" + memory_text
+        user_content += f"""
 [CURRENT LOCATION]
 {scene_location}
 
 [YOUR VERIFIED OBSERVATIONS - NOT OMNISCIENT NARRATION]
 {recent_prose_context[-3000:] if len(recent_prose_context) > 3000 else recent_prose_context}
 """
+        previous = await turn_store.get_last_intention(story_id, self.character.id)
+        if previous:
+            user_content += "\n[YOUR PREVIOUS PRIVATE THOUGHT AND ATTEMPT]\n" + json.dumps(previous, ensure_ascii=False)
+            user_content += "\nThis is your past intention, not proof it succeeded. Reconcile it with verified observations; do not repeat a resolved attempt or treat an inference as a fact."
 
         if self.character.is_player_controlled and player_instruction:
-            user_content += f"\n[PLAYER INPUT / INTENDED ACTION]: {player_instruction}\n(Express this through your authentic voice, personality, and physical capabilities in Finnish)."
+            user_content += f"\n[PLAYER INPUT / INTENDED ACTION]: {player_instruction}\n(Express this through your authentic voice, personality, and physical capabilities, following the language directive)."
 
         messages = [
             {"role": "system", "content": system_prompt},

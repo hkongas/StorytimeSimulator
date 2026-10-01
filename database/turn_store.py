@@ -1,4 +1,8 @@
 import json
+import hashlib
+import os
+from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
 import aiosqlite
@@ -13,6 +17,47 @@ class TurnConflictError(ValueError):
 
 
 STATE_TABLES = ("characters", "character_memories", "character_observations", "scenes", "story_runtime", "chronicle_entries")
+
+
+def get_recovery_dir(story_id: str) -> Path:
+    from config import settings
+    project = hashlib.sha256(str(settings.BASE_DIR.resolve()).encode()).hexdigest()[:16]
+    root = Path(os.getenv("LOCALAPPDATA", str(Path.home() / ".local" / "share")))
+    return root / "Tarinamoottori" / "recovery" / project / db.get_story_dir(story_id).name
+
+
+def _save_recovery(story_id: str, payload: dict):
+    directory = get_recovery_dir(story_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    identifier = hashlib.sha256(payload["response"]["request_id"].encode()).hexdigest()
+    target = directory / f"{identifier}.json"
+    temporary = directory / f"{uuid4().hex}.tmp"
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+async def verify_committed_turn(story_id: str, response: TurnResponse):
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute(
+            "SELECT response_json FROM turn_receipts WHERE request_id = ?", (response.request_id,)
+        ) as cursor:
+            receipt = await cursor.fetchone()
+        async with connection.execute(
+            "SELECT t.director_prose FROM scene_turns t JOIN turn_snapshots s ON s.turn_id = t.id WHERE s.request_id = ?",
+            (response.request_id,)
+        ) as cursor:
+            turn = await cursor.fetchone()
+    if not receipt or not turn or turn[0] != response.director_prose:
+        raise TurnConflictError("Vuoron tallennusta ei voitu varmistaa levyltä. Vastaus säilytettiin paikalliseen palautuslokiin. Älä generoi uutta vuoroa ennen palautusta.")
+    stored = TurnResponse.model_validate_json(receipt[0])
+    if stored.request_id != response.request_id or stored.director_prose != response.director_prose:
+        raise TurnConflictError("Tallennettu vuorokuitti ei vastaa valmistunutta vastausta.")
 
 
 async def _capture_state(connection) -> dict:
@@ -47,6 +92,20 @@ async def get_observation(story_id: str, character_id: str) -> str:
     return row[0] if row else "Ei uusia varmennettuja havaintoja. Tukeudu omiin muistoihisi ja tietoihisi."
 
 
+async def get_last_intention(story_id: str, character_id: str) -> dict:
+    await db.init_story_db(story_id)
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute("SELECT payload_json FROM turn_receipts ORDER BY rowid DESC") as cursor:
+            async for row in cursor:
+                payload = json.loads(row[0])
+                if payload.get("rolled_back"):
+                    continue
+                for intention in payload.get("audit", {}).get("intentions", []):
+                    if intention.get("character_id") == character_id:
+                        return intention
+    return {}
+
+
 async def seed_observations(story_id: str, observations: dict[str, str]):
     await db.init_story_db(story_id)
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
@@ -54,6 +113,32 @@ async def seed_observations(story_id: str, observations: dict[str, str]):
             "INSERT INTO character_observations VALUES (?, ?) ON CONFLICT(character_id) DO NOTHING",
             list(observations.items())
         )
+        await connection.commit()
+
+
+async def get_reading_metadata(story_id: str) -> dict:
+    await db.init_story_db(story_id)
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute(
+            "SELECT s.turn_id, t.scene_id, r.payload_json FROM turn_snapshots s JOIN scene_turns t ON t.id = s.turn_id JOIN turn_receipts r ON r.request_id = s.request_id ORDER BY s.turn_id"
+        ) as cursor:
+            rows = await cursor.fetchall()
+    result = (await get_runtime(story_id)).get("initial_reading", {}).copy()
+    for turn_id, scene_id, payload_json in rows:
+        payload = json.loads(payload_json)
+        if payload.get("rolled_back"):
+            continue
+        outcome = payload.get("outcome", {})
+        result[str(turn_id)] = {"chapter_id": scene_id, "chapter_title": outcome.get("chapter_title", ""),
+                               "recap": outcome.get("summary", ""),
+                               "player_views": payload.get("audit", {}).get("player_views", {})}
+    return result
+
+
+async def save_initial_reading(story_id: str, metadata: dict):
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        await connection.execute("INSERT INTO story_runtime VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json",
+                                 (json.dumps({"initial_reading": metadata}),))
         await connection.commit()
 
 
@@ -85,6 +170,13 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
             if current_id != expected_last_id:
                 raise TurnConflictError("Tarina muuttui generoinnin aikana. Lataa tarina uudelleen.")
             before = await _capture_state(connection)
+            _save_recovery(story_id, {
+                "story_id": story_id, "expected_last_id": expected_last_id,
+                "expected_revision": revision, "before": before,
+                "turn": turn.model_dump(mode="json"), "characters": [character.model_dump(mode="json") for character in characters],
+                "outcome": outcome.model_dump(mode="json"), "response": response.model_dump(mode="json"),
+                "fingerprint": fingerprint, "audit": audit
+            })
             for character in characters:
                 values = character.model_dump(exclude={"created_at"})
                 values["known_locations"] = json.dumps(values["known_locations"])
@@ -109,6 +201,14 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                 (turn.scene_id, turn.turn_index, turn.acting_character_id, turn.perceived_context, turn.internal_monologue, turn.character_action, turn.director_prose, json.dumps(turn.choices), turn.image_prompt)
             )
             state = {key: getattr(outcome, key) for key in ("summary", "world_facts", "plot_threads", "decision_character_ids")}
+            previous_state = json.loads(before["story_runtime"][0]["state_json"]) if before["story_runtime"] else {}
+            for key in ("director_plan", "director_notes", "world_description"):
+                state[key] = getattr(outcome, key) or previous_state.get(key, "")
+            state["chapter_title"] = outcome.chapter_title or previous_state.get("chapter_title", "")
+            state["player_views"] = audit.get("player_views", previous_state.get("player_views", {}))
+            state["initial_reading"] = previous_state.get("initial_reading", {})
+            if outcome.chapter_end:
+                state["chapter_title"] = ""
             state["mode"] = response.mode
             await connection.execute(
                 "INSERT INTO story_runtime VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json",
@@ -137,6 +237,7 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
         except BaseException:
             await connection.rollback()
             raise
+    await verify_committed_turn(story_id, response)
 
 
 async def update_turn_prose(story_id: str, turn_id: int, new_prose: str, expected_revision: int):

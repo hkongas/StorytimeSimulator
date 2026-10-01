@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Optional, AsyncIterator
 from config import settings
 from core.llm_client import LLMClient
 from core.types import StoryMeta, Character, Scene, SceneTurn, ChronicleEntry
-from core.schemas import StoryInitResponse, ProseTurnResponse, pydantic_to_json_schema
+from core.schemas import StoryInitResponse, ProseTurnResponse, TurnPlanResponse, PlayerViewResponse, pydantic_to_json_schema
 from core.prompt_loader import prompt_loader
 import database.db as db
 
@@ -190,6 +190,49 @@ Deliver the sensory perception briefing directly for '{character.name}'.
         except Exception:
             return f"Olet tilassa {scene.location}. Havaitset ympärilläsi olevat hahmot ja tilanteen kehittyvän."
 
+    async def plan_turn(self, story_id, scene, characters, runtime, mode, user_input, director_guidance, private_intention):
+        from database import turn_store
+        meta = await db.get_story_meta(story_id)
+        previous_intentions = {character.id: await turn_store.get_last_intention(story_id, character.id)
+                               for character in characters}
+        system = prompt_loader.compose_system_prompt("director/plan_turn", tone_profile=meta.tone_profile,
+                                                     custom_tone_override=meta.custom_tone_override)
+        system += "\n" + prompt_loader.get_raw_prompt(f"director/mode_{mode}.txt")
+        data = await self.llm.json_completion(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps({
+                "mode": mode, "user_input": user_input, "world_intervention": director_guidance,
+                "player_private_intention": private_intention if mode == "roleplay" else None, "scene": scene.model_dump(),
+                "characters": [character.model_dump() | {"is_player_controlled": character.is_player_controlled if mode == "roleplay" else False}
+                               for character in characters],
+                "previous_private_intentions": previous_intentions,
+                "runtime": runtime, "world_lore": runtime.get("world_description") or meta.world_lore,
+                "plot_arc": runtime.get("director_plan") or meta.director_plot_arc,
+                "notes": runtime.get("director_notes") or meta.director_notes
+            }, ensure_ascii=False)}], role="director", story_id=story_id,
+            json_schema=pydantic_to_json_schema(TurnPlanResponse, "turn_plan")
+        )
+        return TurnPlanResponse.model_validate(data)
+
+    async def create_player_view(self, story_id, character, outcome, intention, runtime, location, tone_profile, custom_tone_override):
+        from database import turn_store
+        memories = await db.get_relevant_memories(story_id, character.id, location, limit=20)
+        previous_view = runtime.get("player_views", {}).get(character.id, {})
+        system = prompt_loader.compose_system_prompt("director/player_view", tone_profile=tone_profile,
+                                                     custom_tone_override=custom_tone_override)
+        data = {"character": character.model_dump(), "location": location,
+                "memories": [memory.content for memory in memories],
+                "previous_observation": await turn_store.get_observation(story_id, character.id),
+                "perceived_events": [event.description for event in outcome.events if character.id in event.witnesses],
+                "own_intention": intention, "previous_recap": previous_view.get("recap", ""),
+                "previous_chapter_title": previous_view.get("chapter_title", "") if runtime.get("chapter_title") else ""}
+        result = await self.llm.json_completion(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps(data, ensure_ascii=False)}],
+            role="director", story_id=story_id, json_schema=pydantic_to_json_schema(PlayerViewResponse, "player_view"))
+        view = PlayerViewResponse.model_validate(result).model_dump()
+        if data["previous_chapter_title"]:
+            view["chapter_title"] = data["previous_chapter_title"]
+        return view
+
     async def synthesize_turn_prose(
         self,
         story_id: str,
@@ -203,7 +246,8 @@ Deliver the sensory perception briefing directly for '{character.name}'.
         reader_wish: Optional[str] = None,
         runtime: Optional[Dict[str, Any]] = None,
         characters: Optional[List[Character]] = None,
-        player_character_id: Optional[str] = None
+        player_character_id: Optional[str] = None,
+        turn_plan: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Kirjoittaa monihahmoisista aikeista rikkaan suomenkielisen proosakappaleen.
         
@@ -225,6 +269,9 @@ Deliver the sensory perception briefing directly for '{character.name}'.
             story_title=meta.title if meta else 'Tarina',
             story_genre=meta.genre if meta else 'Seikkailu'
         )
+        system_prompt = system_prompt.split("RESPONSE SPECIFICATION:")[0] + "\nReturn the supplied JSON schema completely, with cumulative continuity and a requires_player_input flag when another user decision is needed."
+        system_prompt += "\n" + prompt_loader.get_language_directive()
+        system_prompt += "\n" + prompt_loader.get_raw_prompt(f"director/mode_{mode}.txt")
 
         # Muodostetaan kaikkien hahmojen aikeet yhdeksi blokiksi
         intentions_block = ""
@@ -251,16 +298,16 @@ Location: {scene.location}
 Scene Goal / Tension: {scene.scene_goal}
 
 [WORLD LORE & CONTEXT]
-{meta.world_lore if meta else ''}
+{(runtime or {}).get('world_description') or (meta.world_lore if meta else '')}
 
 [RECENT CHRONICLE SUMMARY]
 {chronicle_summary}
 
 [SECRET PLOT ARC TRAJECTORY]
-{meta.director_plot_arc if meta else ''}
+{(runtime or {}).get('director_plan') or (meta.director_plot_arc if meta else '')}
 
 [DIRECTOR NOTES]
-{meta.director_notes if meta else ''}
+{(runtime or {}).get('director_notes') or (meta.director_notes if meta else '')}
 
 [ENGINE MODE]
 {mode}
@@ -271,7 +318,7 @@ Reader wish: {reader_wish or 'none'}
 {json.dumps(runtime or {}, ensure_ascii=False)}
 
 [CHARACTER DOSSIERS - NARRATOR ONLY]
-{json.dumps([character.model_dump() for character in (characters or [])], ensure_ascii=False)}
+{json.dumps([character.model_dump() | {"is_player_controlled": character.is_player_controlled if mode == "roleplay" else False} for character in (characters or [])], ensure_ascii=False)}
 
 [ALL CHARACTERS' INTENTIONS & ATTEMPTS THIS MOMENT]
 {intentions_block}
@@ -281,6 +328,9 @@ Reader wish: {reader_wish or 'none'}
 """
         if director_guidance:
             user_content += f"\n[DIRECTOR OVERRIDE / GUIDANCE]: {director_guidance}\n"
+        if turn_plan:
+            user_content = "[ACCEPTED PRE-DECISION PLAN]\n" + json.dumps(turn_plan, ensure_ascii=False) + "\n" + user_content
+            system_prompt += "\nThe plan's events already happened before character intentions. Do not repeat or undo them. Honor its direction and resolve only the subsequent actions."
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -288,18 +338,17 @@ Reader wish: {reader_wish or 'none'}
         ]
 
         prose_schema = pydantic_to_json_schema(ProseTurnResponse, "prose_turn")
-        policies = {
-            "novel": "Continue routine activity fluently. Stop before an important independent character decision and request it through decision_character_ids.",
-            "simulation": "Resolve a meaningful situation from the supplied independent character intentions; avoid unnecessary round-robin speeches.",
-            "roleplay": "Preserve the designated player's attempted action and private intention. Stop before choosing their next important action."
-        }
         messages[0]["content"] += (
-            f"\n\nENGINE CONTRACT ({mode}): {policies[mode]} "
+            f"\n\nENGINE CONTRACT ({mode}): "
             "Return a complete schema-valid result, cumulative summary, updated facts and unresolved threads. "
             "Current continuity supersedes the initial plot or lore when events changed them. "
             "Events contain only observable descriptions and explicit witness IDs, never private thoughts or director instructions. "
             "Empty witness lists are narrator-only facts. Do not grant offstage characters observations."
+            " Put suggested choices exclusively in the choices array. Never append menus, numbered options or user instructions to prose."
         )
+        if mode != "roleplay":
+            messages[0]["content"] += " All characters are AI-controlled in this mode. Never wait for user input to supply a formerly player-controlled character's response."
+        messages[0]["content"] += " The prose field is the narrator's omniscient reading version in ALL modes, including roleplay; a separate knowledge-limited player version is generated from witnessed events only. Integrate supplied private thoughts selectively to convey emotion and motivation. Return chapter_title, director_plan, director_notes and world_description updated from actual outcomes. Plans are revisable possibilities, never accomplished facts. Keep this chapter's title stable until chapter_end."
         data = await self.llm.json_completion(
             messages=messages, role="director", json_schema=prose_schema, story_id=story_id
         )

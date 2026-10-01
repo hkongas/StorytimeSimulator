@@ -1,4 +1,4 @@
 [LANGUAGE DIRECTIVE]
-- All narrative prose, dialogues, character actions, internal monologues, thoughts, and world descriptions MUST be produced exclusively in rich, natural, highly evocative FINNISH (suomeksi).
+- All narrative prose, dialogues, character actions, internal monologues, thoughts, and world descriptions MUST be produced exclusively in natural FINNISH (suomeksi). Narrative style and pacing follow the active mode and tone profile, not this language directive.
 - Adhere to the selected narrative perspective (e.g. 1st person 'minä' or 3rd person) consistently.
 - Never output English in the final story text except for dedicated metadata fields such as image prompts.

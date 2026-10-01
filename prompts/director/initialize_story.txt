@@ -33,7 +33,7 @@ Return strictly valid JSON with the following schema:
   "initial_scene": {
     "location": "Specific opening location and environmental condition.",
     "scene_goal": "The primary tension or impending development of the scene.",
-    "opening_prose": "Exquisite, high-literary narrative opening in Finnish (2-4 vivid paragraphs) setting the scene and drawing the reader in.",
+    "opening_prose": "Concrete narrative opening in the instructed language (2-4 paragraphs) establishing people, the situation and an immediate consequential choice.",
     "events": [{"description": "Something publicly observable in the opening; no private thoughts or hidden plot facts", "witnesses": ["unique_short_id"]}]
   }
 }

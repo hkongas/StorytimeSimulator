@@ -41,9 +41,17 @@ Tilaa voi vaihtaa kesken tarinan. Hahmokortin **Pelaa hahmona** siirtää roolip
 - **Keskeytä** lopettaa keskeneräisen työn. Jo hyväksyttyä vuoroa se ei peruuta.
 - **Näytä salaisuudet** avaa ohjaajan ja hahmojen yksityisiä tietoja. Se on lukukokemuksen valinta, ei käyttäjien välinen käyttöoikeusraja.
 
-## Tekstieditori Ja Kumoaminen
+## Lukunäkymät Ja Kehittyvä Juoni
 
-Vuoron kynäpainike avaa tekstieditorin. **Tallenna vain teksti** päivittää proosan ja vientitiedostot ilman mallikutsuja. Korjattu tuore proosa menee kertojan seuraavan vuoron kontekstiin. Revision tarkistus estää vanhentuneen tallennuksen. Vanha ja uusi proosa säilyvät `prose_edits`-historiassa; historian palautusnäkymää ei vielä ole.
+Lukutilan näkökulmavalinta erottaa kertojan kaikkitietävän proosan ja valitun pelaajahahmon rajatun proosan. Roolipelissä näytetään rajattu näkökulma; romaani- tai simulaatiotilaan siirtyminen avaa kertojanäkymän. Kertojan proosaan voidaan sisällyttää hahmojen palauttamia ajatuksia. Pelaajaversio muodostetaan erillisellä mallikutsulla vain hahmon omista tiedoista ja todistetuista havainnoista, ei kaikkitietävää proosaa suodattamalla. Tämä lisää yhden kertojamallin kutsun, kun pelaajahahmo on valittu, myös romaanissa ja simulaatiossa. Koko vuoro tallentuu vasta molempien versioiden valmistuttua. Tietoraja riippuu edelleen mallin havaintomerkintöjen oikeellisuudesta, eikä ole eri käyttäjien käyttöoikeusraja.
+
+Sisällysluettelo siirtyy lukuotsikoihin. Kertaukset avautuvat valitun näkökulman tietojen mukaan; pelaajan otsikotkaan eivät saa paljastaa salaisuuksia. Vanhoille vuoroille tai myöhemmin valitulle eri pelaajahahmolle ei arvata rajattua versiota, vaan puuttuva näkökulma merkitään. Pelaajaversion proosaa ei voi muokata kertojan tekstieditorilla. Tekstikorjaus ei automaattisesti kirjoita rajattua versiota uudelleen. TXT/Markdown-vienti on edelleen kertojan proosa.
+
+Jokaisen hyväksytyn vuoron jatkuvuustilaan tallentuvat kumulatiivinen tapahtumatiivistelmä, faktat, avoimet juonilangat sekä mallin päivittämä juonisuunnitelma, ohjaajan muistiinpanot ja kehittyvä maailmankuva. Seuraava suunnittelu käyttää näitä alkuperäisten tekstien sijaan, kun päivitys on saatavilla. Ohjaajapaneeli näyttää kehittyvät versiot; alkuperäiset metatiedot säilyvät lähtöaineistona. Suunnitelma kuvaa mahdollisia jatkoja, ei jo tapahtuneita faktoja. Muutokset tallentuvat yhdessä tapahtumien kanssa ja palautuvat kumoamisessa. Mallin jättämä tyhjä päivitys säilyttää edellisen version.
+
+## Tekstimuokkaus
+
+Vuoron kynäpainike tai tekstin tuplaklikkaus avaa muokkauksen suoraan lukutekstiin. Fontti säilyy samana ja sivumerkki ilmaisee muokkaustilan. Toiseen kohtaan siirtyminen tallentaa tekstikorjauksen ja vientitiedostot ilman mallikutsuja. Virheessä teksti jää muokkaustilaan eikä katoa. Korjattu tuore proosa menee kertojan seuraavan vuoron kontekstiin. Revision tarkistus estää vanhentuneen tallennuksen. Vanha ja uusi proosa säilyvät `prose_edits`-historiassa; historian palautusnäkymää ei vielä ole.
 
 **Tekstimuokkaus ei muuta tapahtumia, havaintoja, muisteja tai jatkuvuustiivistelmää.** Käytä sitä oikolukuun ja tyyliin. Juonimuutosten automaattista tilasynkronointia ei vielä ole; `sync_state: true` hylätään tallentamatta tekstiä. Myös vanhoja kappaleita voi korjata tekstinä, mutta muutokset eivät kirjoita myöhempien vuorojen tilaa uudelleen.
 
@@ -54,6 +62,8 @@ Tapahtumien ja havaitsijoiden semanttinen oikeellisuus on edelleen mallin ehdotu
 Kumoamispainike palauttaa viimeisintä vuoroa edeltäneet hahmot, muistit, havainnot, kohtaukset ja jatkuvuustilan. Se toimii vain uusille vuoroille, joille tämä versio tallensi palautuspisteen. Aloitusta ja vanhoja vuoroja ei voi kumota. Myöhemmät erilliset tilamuutokset estävät kumoamisen; tekstikorjaukset eivät. Mallikuluja ei hyvitetä. Uusi jatko käyttää uutta pyyntötunnistetta. Editorin avaaminen tai kumoaminen pysäyttää automaattijatkon.
 
 ## Vuoron Tietovirta
+
+Vuoro käyttää yhtä rajattua sykliä: kertojan suunnitelma, valittujen hahmojen aikeet ja kertojan loppuratkaisu. Suunnitelma soveltaa maailmanmuutokset ennen hahmojen päätöksiä ja välittää vain havaittavat seuraukset. Tilakohtaiset ohjeet painottavat romaanissa kirjailijan suuntaa, simulaatiossa itsenäisiä aikeita ja roolipelissä pelaajan yritystä. Toiveen toteutumista ei selitetä erillisellä ilmoituksella. Suunnittelukutsu lisää yhden mallikutsun vuoroon. Kertojan pysäytyssignaali katkaisee automaattijatkon; useita sisäisiä syklejä ei vielä ajeta. Oma jatko kirjoitetaan myös tarinan lopussa samassa näkymässä, ei erillisessä pop-upissa.
 
 ```text
 Tarinan tila ja versio
@@ -69,13 +79,15 @@ Tarinan tila ja versio
 
 Muistihaku yhdistää viimeaikaisia muistoja vanhempiin paikkaan tai motiiviin sanallisesti liittyviin ja tärkeiksi merkittyihin muistoihin. Kertojalle ylläpidetään kumulatiivista tiivistelmää, pysyviä faktoja, avoimia juonilankoja ja seuraavia päätöksentekijöitä. Tämä on rajattu tekstimuisti, ei rajaton tai erehtymätön muistijärjestelmä.
 
+Hahmo saa seuraavalla kierroksella myös oman viimeisen hyväksytyn aikeensa ja fiktiivisen sisäisen monologinsa. Ne erotetaan varmennetuista havainnoista: yritys ei todista onnistumista, eikä päätelmä ole fakta. Muiden hahmojen ajatuksia ei välitetä. Viimeisin aie ja ajatukset löytyvät hahmokortin salaisuustiedoista. Kumoaminen palauttaa myös tämän jatkuvuuden. Hahmopromptin ohjeosa on vakaa, ja muuttuvat hahmotiedot, muistit sekä havainnot ovat syötedataa; todellisia cache-säästöjä ei ole vielä mitattu.
+
 ## Tallennus Ja Palautuminen
 
 - Tarinalla on oma SQLite-tietokanta `stories/<tunniste>/story.db`.
 - Hahmojen muutokset, havainnot, muistot, kohtaus, proosa, jatkuvuustila ja pyyntökuitti hyväksytään yhdessä transaktiossa.
 - Tilaversio estää vanhaan tilanteeseen perustuvaa generointia ylikirjoittamasta välissä tehtyä muokkausta.
 - Saman pyyntötunnisteen uudelleenlähetys palauttaa hyväksytyn vastauksen. Samaa tunnistetta ei saa käyttää eri sisällölle.
-- Selain seuraa palvelimen taustatyötä. Sivun lataus ei käynnistä uutta vuoroa. Keskeneräisen työn tunniste säilyy välilehden `sessionStorage`-tilassa.
+- Selain seuraa palvelimen taustatyötä SSE-yhteydellä, ei sekunnin välein toistuvilla GET-kyselyillä. Työvaiheet näyttää suunnittelun, hahmojen aikeiden valmistumisen ja tallennuksen. SSE-yhteyden katkeaminen ei keskeytä taustatyötä; Palauta yhteys jatkaa saman tunnisteen seurantaa. Sivun lataus ei käynnistä uutta vuoroa. Keskeneräisen työn tunniste säilyy välilehden `sessionStorage`-tilassa. Väli-ilmoitukset ovat palvelimen muistissa; valmis kuitti säilyy tietokannassa.
 - Palvelimen uudelleenkäynnistys keskeyttää keskeneräiset työt. Valmiit kuitit säilyvät tietokannassa. **Palauta yhteys** käyttää samaa pyyntöä.
 - Katkennut tai virheellinen mallivastaus hylätään. Se ei muutu keksityksi varatarinaksi.
 - `story.txt` ja `story.md` ovat tietokannasta muodostettavia vientitiedostoja. Niihin käsin tehdyt muutokset eivät päivitä tarinan tilaa ja korvautuvat seuraavassa viennissä.
@@ -83,6 +95,12 @@ Muistihaku yhdistää viimeaikaisia muistoja vanhempiin paikkaan tai motiiviin s
 Vanha tietokanta päivitetään avattaessa. Vanhemmasta kannasta tehdään `story.pre-v4.db` ja version 4 kannasta ennen editorimigraatiota `story.pre-v5.db` SQLite-varmuuskopio. Säilytä lisäksi omat varmuuskopiot tärkeistä tarinoista. Älä käytä samaa tarinakansiota samanaikaisesti usealta koneelta pilvisynkronoinnin kautta.
 
 ## Yksityisyys Ja Asetukset
+
+### Vuorojen Palautusloki
+
+Ennen vuoron tallennusta koko hyväksyttävä vastaus, tapahtumat, hahmotilat ja lähtötila kirjoitetaan Google Drive -projektikansion ulkopuolelle Windowsin `%LOCALAPPDATA%/Tarinamoottori/recovery`-hakemistoon. Commitin jälkeen vuoro, kuitti ja palautuspiste tarkistetaan uudella tietokantayhteydellä. Valmiiden taustatöiden tilakysely tarkistaa myös levyltä, että vuoro on edelleen olemassa. Puuttuva tallennus ilmoitetaan virheenä, ei onnistumisena.
+
+Palautusloki sisältää salaamatonta tarinatekstiä, hahmojen salaisuuksia ja tilatietoja. Se ei ole API-avainvarasto. Suojaa käyttäjätili ja poista tarpeettomat palautustiedostot erikseen; tarinan poistaminen ei poista tätä paikallista lokia automaattisesti. Aktiivisen SQLite-tietokannan pilvisynkronointi on edelleen riski: suosi paikallista työkansiota ja synkronoi vain suljettuja SQLite-varmuuskopioita. Käytä yhtä palvelinprosessia ja yhtä kirjoittavaa konetta.
 
 Tallennus on paikallinen, mutta pilvimallia käytettäessä sen saamat promptit, hahmotiedot ja tarinakatkelmat lähetetään valitulle palveluntarjoajalle. Sovellus ei siis ole automaattisesti kokonaan paikallinen tai offline.
 

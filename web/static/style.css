@@ -1,3 +1,41 @@
+.authored-prose { min-height: 120px; white-space: pre-wrap; outline: none; }
+#authoredTurnModal {
+  position: static;
+  display: block;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+#authoredTurnModal.hidden { display: none; }
+#authoredTurnModal .modal-card {
+  width: 100%; max-width: none; max-height: none;
+  background: transparent; border: 0; box-shadow: none; border-radius: 0;
+}
+#authoredTurnModal .modal-header { display: none; }
+#authoredTurnModal .modal-body { padding: 12px 0; overflow: visible; }
+#authoredTurnModal .modal-body > label { display: none; }
+#authoredTurnModal .modal-footer { padding: 12px 0; }
+#authoredTurnModal .authored-prose {
+  font: inherit; color: inherit; line-height: inherit;
+  box-shadow: -3px 0 0 var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+.turn-prose.is-editing {
+  outline: none;
+  box-shadow: -3px 0 0 var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+.turn-prose { overflow-wrap: anywhere; }
+.story-writing-area {
+  min-height: 72px;
+  margin-top: 16px;
+  border-top: 1px dashed var(--border-color);
+  cursor: text;
+}
+.story-writing-area:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 4px;
+}
 .turn-editor { width: 100%; }
 .prose-editor-input { width: 100%; min-height: 280px; resize: vertical; box-sizing: border-box; line-height: 1.65; }
 .turn-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
@@ -1274,11 +1312,36 @@ body[data-secrets="true"] .turn-header { display: flex; opacity: 0.65; font-size
 .role-selector-bar { flex-wrap: wrap; gap: 8px; }
 .segment-btn { min-height: 36px; padding: 5px 12px; color: var(--text-secondary); }
 .styled-input { min-width: 0; }
-.composer-options { display: flex; flex-wrap: wrap; align-items: start; gap: 8px 20px; color: var(--text-secondary); font-size: 0.85rem; }
+.composer-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: start; gap: 8px 20px; color: var(--text-secondary); font-size: 0.85rem; }
 .composer-options details { min-width: 0; }
-.composer-options details[open] { flex-basis: 100%; order: 1; }
 .composer-options summary { cursor: pointer; padding: 5px 0; }
 .composer-options textarea { margin-top: 8px; }
+.composer-options details { grid-column: 1; }
+.composer-options #privateIntentionGroup:not(.hidden) + details { grid-column: 2; }
+.composer-options .auto-controls { grid-column: 3; grid-row: 1; }
+.turn-progress { margin: 12px 0; padding: 8px 0 8px 12px; border-left: 2px solid var(--color-primary); overflow-wrap: anywhere; }
+.submitted-action { white-space: pre-wrap; color: var(--text-secondary); margin: 0 0 12px; }
+.progress-connection { display: flex; justify-content: space-between; gap: 12px; font-size: 0.78rem; color: var(--text-secondary); margin: 8px 0; }
+#turnProgressLog { list-style: none; padding: 0; margin: 0; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem; }
+#turnProgressLog li:first-child:not(:last-child) { opacity: 0.5; }
+.progress-thought { margin: 4px 0 0; font-style: italic; color: var(--text-secondary); }
+.progress-thought summary { cursor: pointer; }
+.writing-hint { color: var(--text-secondary); opacity: 0.6; font-size: 0.85rem; }
+.reading-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 16px; font-size: 0.82rem; }
+.reading-toolbar select { max-width: 100%; min-width: 0; padding: 6px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; }
+.reading-toolbar label { display: flex; align-items: center; gap: 5px; }
+.chapter-heading { font-family: var(--font-serif); font-size: 1.4rem; line-height: 1.4; margin: 24px 0 12px; overflow-wrap: anywhere; }
+.viewpoint-marker { font-size: 0.8rem; color: var(--text-secondary); border-bottom: 1px solid var(--border-color); margin: 0 0 12px; }
+.reading-recap { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 20px; }
+.reading-recap summary { cursor: pointer; }
+body[data-mode="roleplay"] .character-card:not([data-player="true"]) .private-detail { display: none !important; }
+body[data-mode="roleplay"] #tabDirector,
+body[data-mode="roleplay"] #tabLore,
+body[data-mode="roleplay"] .inspector-tabs button[onclick*="director"],
+body[data-mode="roleplay"] .inspector-tabs button[onclick*="lore"],
+body[data-mode="roleplay"] .reveal-control { display: none !important; }
+.story-writing-area:has(#authoredTurnModal:not(.hidden)) > .writing-hint { display: none; }
+.story-composer { min-height: 60px; }
 .auto-controls { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .auto-controls label { display: flex; gap: 6px; align-items: center; }
 #autoBudget { width: 48px; padding: 3px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-input); color: var(--text-primary); }
@@ -1330,6 +1393,9 @@ body[data-mode="roleplay"] .character-card[data-player="true"] .private-detail {
   .styled-input { padding: 10px; font-size: 1rem; }
   .btn-action { padding: 10px 12px; min-width: 0; font-size: 0.88rem; }
   .composer-options { gap: 4px 12px; font-size: 0.8rem; }
+  .composer-options { grid-template-columns: minmax(0, 1fr) auto; }
+  .composer-options #privateIntentionGroup:not(.hidden) + details { grid-column: 1; }
+  .composer-options .auto-controls { grid-column: 2; }
   .grid-2-col { grid-template-columns: minmax(0, 1fr); }
   .modal-backdrop { padding: 12px; }
   .modal-header, .modal-body, .modal-footer { padding: 14px; }

@@ -83,6 +83,12 @@ class StoryEngine:
                 raise ValueError("Jatko viittaa tuntemattomaan päätöksentekijään tai läsnäolijaan.")
             if revision != await turn_store.get_revision(story_id):
                 raise turn_store.TurnConflictError("Tarina muuttui analyysin aikana. Muutoksia ei tallennettu.")
+            player_views = {}
+            viewpoint_character = next((character for character in await db.get_all_characters(story_id) if character.is_player_controlled), None)
+            if viewpoint_character:
+                player_views[viewpoint_character.id] = await self.director.create_player_view(
+                    story_id, viewpoint_character, outcome, {}, runtime, scene.location,
+                    meta.tone_profile, meta.custom_tone_override)
             now = time.monotonic()
             self.authored_previews = {identifier: preview for identifier, preview in self.authored_previews.items()
                                      if preview["expires"] > now and preview["story_id"] != story_id}
@@ -92,6 +98,7 @@ class StoryEngine:
             self.authored_previews[identifier] = {
                 "story_id": story_id, "revision": revision, "expires": now + 1800,
                 "outcome": outcome, "characters": list(roster.values()), "scene": scene,
+                "player_views": player_views,
                 "last_id": max((turn.id or 0 for turn in turns), default=0),
                 "turn_index": max((turn.turn_index for turn in turns), default=0) + 1,
                 "mode": runtime.get("mode", "novel")
@@ -121,7 +128,7 @@ class StoryEngine:
                              director_prose=outcome.prose, character_action="Käyttäjän kirjoittama jatko")
             await turn_store.commit_turn(story_id, preview["last_id"], turn, preview["characters"], outcome, response,
                                          hashlib.sha256(outcome.prose.encode()).hexdigest(),
-                                         {"source": "authored", "preview_id": preview_id}, expected_revision=preview["revision"])
+                                         {"source": "authored", "preview_id": preview_id, "player_views": preview["player_views"]}, expected_revision=preview["revision"])
             self.authored_previews.pop(preview_id, None)
             try:
                 await turn_store.rebuild_exports(story_id)
@@ -168,6 +175,14 @@ class StoryEngine:
                 for character in result["characters"]
             }
             await turn_store.seed_observations(story_id, observations)
+            player = next((character for character in result["characters"] if character.is_player_controlled), None)
+            if player:
+                opening_outcome = ProseTurnResponse(prose=result["opening_prose"], summary="Tarinan aloitus", events=events)
+                view = await self.director.create_player_view(story_id, player, opening_outcome, {}, {},
+                                                            result["scene"].location, request.tone_profile or "default", request.custom_tone_override)
+                opening_turn = (await db.get_all_story_turns(story_id))[0]
+                await turn_store.save_initial_reading(story_id, {str(opening_turn.id): {
+                    "chapter_id": opening_turn.scene_id, "chapter_title": "", "recap": "", "player_views": {player.id: view}}})
             await turn_store.rebuild_exports(story_id)
             return {"story_id": story_id, **result, "mode": mode}
         except BaseException:
@@ -212,30 +227,94 @@ class StoryEngine:
             player = next((character for character in present if character.is_player_controlled), None)
             if mode == "roleplay" and player is None:
                 raise ValueError("Valitse kohtauksessa oleva toimintakykyinen pelaajahahmo.")
+            yield {"type": "phase", "phase": "turn_planning", "message": "Kertoja suunnittelee tilanteen ja hahmojen havainnot..."}
+            plan = await self.director.plan_turn(story_id, scene, characters, runtime, mode,
+                                                 user_input, director_guidance, private_intention)
+            planned_spawned = []
+            for candidate in plan.spawned_characters:
+                if candidate.id in roster or not candidate.id or not all(char.isalnum() or char in "_-" for char in candidate.id):
+                    raise ValueError("Suunnitelmassa on virheellinen uusi hahmo.")
+                character = Character(**candidate.model_dump(), status="active")
+                character.is_player_controlled = False
+                roster[character.id] = character
+                planned_spawned.append(character)
+            if not set(plan.active_character_ids) <= roster.keys():
+                raise ValueError("Suunnitelmassa on tuntematon läsnäolija.")
+            for event in plan.events:
+                if not set(event.witnesses) <= set(scene.active_character_ids) | set(plan.active_character_ids):
+                    raise ValueError("Suunnitelman havaitsija ei ole paikalla.")
+            updated_ids = set()
+            for update in plan.character_state_updates:
+                if update.character_id not in roster or update.character_id in updated_ids:
+                    raise ValueError("Suunnitelmassa on virheellinen hahmopäivitys.")
+                updated_ids.add(update.character_id)
+                for field in ("physical_state", "mental_state", "status"):
+                    value = getattr(update, field)
+                    if value is not None:
+                        setattr(roster[update.character_id], field, value)
+            scene.active_character_ids = plan.active_character_ids
+            scene.location = plan.scene_location or scene.location
+            scene.scene_goal = plan.scene_goal
+            characters = list(roster.values())
+            present = [character for character in characters if character.id in scene.active_character_ids and character.status == "active"]
+            if not set(plan.decision_character_ids) <= {character.id for character in present}:
+                raise ValueError("Suunnitelma pyytää päätöstä toimintakyvyttömältä hahmolta.")
+            if mode == "roleplay" and player and player.id in plan.decision_character_ids:
+                raise ValueError("Suunnitelma ei saa päättää pelaajan puolesta.")
+            if mode == "simulation":
+                plan.decision_character_ids = [character.id for character in present]
             intentions = []
-            if mode == "roleplay" and player:
+            if mode == "roleplay" and player and player in present:
                 intentions.append({"character_id": player.id, "character_name": player.name,
                                    "action_and_speech": user_input or "Odotan ja tarkkailen.",
                                    "internal_monologue": private_intention or ""})
-            decision_ids = set(runtime.get("decision_character_ids", []))
+            decision_ids = set(plan.decision_character_ids)
             acting = [character for character in present
                       if not (mode == "roleplay" and character.is_player_controlled)
-                      and (mode != "novel" or character.id in decision_ids)]
+                      and character.id in decision_ids]
             semaphore = asyncio.Semaphore(self.max_concurrent_characters)
+            progress_queue = asyncio.Queue()
 
             async def decide(character: Character):
                 async with semaphore:
                     observation = await turn_store.get_observation(story_id, character.id)
-                    decision = await CharacterAgent(character, self.llm).decide_intention(
+                    new_observations = [event.description for event in plan.events if character.id in event.witnesses]
+                    if new_observations:
+                        observation += "\n\n" + "\n".join(new_observations)
+                    agent_character = character.model_copy(update={"is_player_controlled": False}) if mode != "roleplay" else character
+                    decision = await CharacterAgent(agent_character, self.llm).decide_intention(
                         story_id=story_id, scene_location=scene.location,
                         recent_prose_context=observation, tone_profile=meta.tone_profile,
                         custom_tone_override=meta.custom_tone_override
                     )
+                    progress = {"character_id": character.id, "character_name": character.name}
+                    if mode != "roleplay":
+                        progress["character_thought"] = decision["internal_monologue"]
+                    progress_queue.put_nowait(progress)
                     return {"character_id": character.id, "character_name": character.name, **decision}
 
             if acting:
                 yield {"type": "phase", "phase": "characters_thinking", "message": f"Hahmot tekevät ratkaisujaan ({len(acting)})..."}
-                decisions = await asyncio.gather(*(decide(character) for character in acting), return_exceptions=True)
+                tasks = [asyncio.create_task(decide(character)) for character in acting]
+                completed_count = 0
+                try:
+                    while not all(task.done() for task in tasks):
+                        try:
+                            progress = await asyncio.wait_for(progress_queue.get(), timeout=0.2)
+                            completed_count += 1
+                            yield {"type": "phase", "phase": "character_complete", "message": f"{progress['character_name']}: aie valmis ({completed_count}/{len(acting)})", **progress}
+                        except asyncio.TimeoutError:
+                            pass
+                    while not progress_queue.empty():
+                        progress = progress_queue.get_nowait()
+                        completed_count += 1
+                        yield {"type": "phase", "phase": "character_complete", "message": f"{progress['character_name']}: aie valmis ({completed_count}/{len(acting)})", **progress}
+                    decisions = await asyncio.gather(*tasks, return_exceptions=True)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 for decision in decisions:
                     if isinstance(decision, BaseException):
                         raise decision
@@ -248,10 +327,13 @@ class StoryEngine:
                 custom_tone_override=meta.custom_tone_override, mode=mode,
                 reader_wish=user_input if mode != "roleplay" else None,
                 runtime=runtime, characters=characters,
-                player_character_id=player.id if mode == "roleplay" and player else None
+                player_character_id=player.id if mode == "roleplay" and player else None,
+                turn_plan=plan.model_dump()
             )
             outcome = ProseTurnResponse.model_validate(raw)
-            spawned = []
+            if runtime.get("chapter_title"):
+                outcome.chapter_title = runtime["chapter_title"]
+            spawned = list(planned_spawned)
             for candidate in outcome.spawned_characters:
                 if candidate.id in roster or not candidate.id or not all(char.isalnum() or char in "_-" for char in candidate.id):
                     raise ValueError("Kertoja palautti päällekkäisen tai virheellisen hahmotunnisteen.")
@@ -263,10 +345,17 @@ class StoryEngine:
             for event in outcome.events:
                 if not set(event.witnesses) <= allowed_witnesses:
                     raise ValueError("Tapahtuman havaitsija ei ole kohtauksessa.")
+            final_events = list(plan.events)
+            for event in outcome.events:
+                if event not in final_events:
+                    final_events.append(event)
+            outcome.events = final_events
             for update in outcome.character_state_updates:
                 if update.character_id not in roster:
                     raise ValueError("Tilapäivitys viittaa tuntemattomaan hahmoon.")
                 character = roster[update.character_id]
+                if character.status == "dead" and update.status is not None and update.status != "dead":
+                    raise ValueError("Loppukertoja ei saa perua jo toteutunutta kuolemaa.")
                 for field in ("physical_state", "mental_state", "status"):
                     value = getattr(update, field)
                     if value is not None:
@@ -277,6 +366,15 @@ class StoryEngine:
                 raise ValueError("Kertoja viittaa tuntemattomaan aktiiviseen hahmoon.")
             for intention in intentions:
                 roster[intention["character_id"]].last_active_turn = turn_index
+            player_views = {}
+            stored_characters = await db.get_all_characters(story_id)
+            viewpoint_character = next((character for character in stored_characters if character.is_player_controlled), None)
+            if viewpoint_character:
+                yield {"type": "phase", "phase": "player_view", "message": "Muodostetaan hahmon tietorajattu näkökulma..."}
+                own_intention = next((intention for intention in intentions if intention["character_id"] == viewpoint_character.id), {})
+                player_views[viewpoint_character.id] = await self.director.create_player_view(
+                    story_id, viewpoint_character, outcome, own_intention, runtime,
+                    (await db.get_active_scene(story_id)).location, meta.tone_profile, meta.custom_tone_override)
             action = "\n".join(f"[{intention['character_name']}]: {intention['action_and_speech']}" for intention in intentions)
             monologue = "\n".join(f"[{intention['character_name']}]: {intention['internal_monologue']}" for intention in intentions)
             response = TurnResponse(
@@ -285,19 +383,23 @@ class StoryEngine:
                 internal_monologue=monologue, character_action=action, director_prose=outcome.prose,
                 choices=outcome.choices, image_prompt=outcome.image_prompt,
                 updated_characters=list(roster.values()), spawned_characters=spawned,
-                story_text_snippet=outcome.prose, is_chapter_end=outcome.chapter_end
+                story_text_snippet=outcome.prose, is_chapter_end=outcome.chapter_end,
+                requires_player_input=plan.requires_player_input or outcome.requires_player_input or mode == "roleplay"
             )
             turn = SceneTurn(scene_id=scene.id, turn_index=turn_index,
                              acting_character_id=player.id if mode == "roleplay" and player else None,
                              internal_monologue=monologue, character_action=action,
                              director_prose=outcome.prose, choices=outcome.choices, image_prompt=outcome.image_prompt)
+            yield {"type": "phase", "phase": "saving", "message": "Tarkistetaan vastaus ja tallennetaan vuoro..."}
             await turn_store.commit_turn(story_id, last_id, turn, list(roster.values()), outcome, response, fingerprint,
                 {"mode": mode, "user_input": user_input, "private_intention": private_intention,
+                 "turn_plan": plan.model_dump(),
+                 "player_views": player_views,
                  "director_guidance": director_guidance, "director_model": settings.DIRECTOR_MODEL,
                  "character_model": settings.CHARACTER_MODEL, "intentions": intentions,
-                 "contract_version": 1,
+                 "contract_version": 2,
                  "prompt_hashes": {path: hashlib.sha256(prompt_loader.get_raw_prompt(path).encode()).hexdigest()
-                    for path in ("director/synthesize_prose.txt", "character/decide_action.txt", "language_directive.txt", "safety_directive.txt", f"tone_profiles/{meta.tone_profile}.txt")}},
+                    for path in ("director/plan_turn.txt", "director/synthesize_prose.txt", "director/player_view.txt", f"director/mode_{mode}.txt", "character/decide_action.txt", "language_directive.txt", "safety_directive.txt", f"tone_profiles/{meta.tone_profile}.txt")}},
                 expected_revision=revision)
             try:
                 await turn_store.rebuild_exports(story_id)

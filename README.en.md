@@ -41,7 +41,15 @@ The mode can be changed during a story. **Play as character** on a character car
 - **Stop** ends work in progress. It does not undo a turn that has already been committed.
 - **Show secrets** reveals private director and character information. This is a reading preference, not an access-control boundary between users.
 
-## Prose Editor And Undo
+## Reading Views And Evolving Plot
+
+The reading toolbar separates omniscient narrator prose from the selected player character's limited view. Roleplay displays the limited view; switching to novel or simulation returns to the narrator view. The narrator can incorporate characters' supplied private thoughts. Limited prose and recaps are generated from only that character's profile, memories, intention and witnessed events, never from shared omniscient prose. This adds one narrator-model call whenever a player character is selected, including novel and simulation. Both versions must succeed before the turn commits. Witness attribution remains model-dependent; this is not multi-user access control.
+
+Chapter navigation uses stable titles. Optional recaps and titles follow the selected viewpoint. Legacy turns or turns belonging to another selected character have an explicit unavailable-view marker rather than a guessed or omniscient fallback. The prose editor edits only narrator text and does not rewrite the limited version. TXT/Markdown exports remain narrator prose.
+
+The atomic runtime now also stores the model's evolving plot plan, current director notes and updated world description alongside cumulative summary, facts and open threads. Subsequent planning uses updated versions when available, with original metadata retained as background. Undo restores evolving state. Plans describe possible developments, not established facts. Empty updates retain the previous version.
+
+## Text Editing
 
 The pencil button opens each turn's prose editor. Saving changes the text and both exports without model calls. Recent edited prose reaches the narrator's next context. Revision checks reject stale saves. Old and new text are retained in the `prose_edits` table; a history restore UI is not implemented.
 

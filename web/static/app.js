@@ -189,17 +189,16 @@ async function loadStoryList() {
   }
 }
 
+let storyLoadSequence = 0;
+
 async function loadStory(storyId) {
   if (!storyId) return;
   if (authoredTurn) return;
   const preserveReadingPosition = storyId === currentStoryId && Boolean(currentStoryData);
-  if (editorSaving) return;
-  if (activeTurnEditor) {
-    if (!confirm("Hylätäänkö tallentamattomat tekstimuutokset?")) return;
-    activeTurnEditor = null;
-  }
+  if ((activeTurnEditor || editorSaving) && !await finishTurnEditor()) return;
   if (storyId !== currentStoryId) document.getElementById('autoContinue').checked = false;
   currentStoryId = storyId;
+  const loadSequence = ++storyLoadSequence;
 
   // Päivitetään aktiivinen luokka sivupalkkiin
   document.querySelectorAll(".sidebar-story-item").forEach(el => {
@@ -207,10 +206,10 @@ async function loadStory(storyId) {
   });
 
   try {
-    const res = await fetch(`/api/stories/${storyId}`);
+    const res = await fetch(`/api/stories/${storyId}`, {cache: 'no-store'});
     if (!res.ok) throw new Error("Tarinaa ei voitu ladata");
     const data = await res.json();
-    if (currentStoryId !== storyId) return;
+    if (currentStoryId !== storyId || loadSequence !== storyLoadSequence) return;
     currentStoryData = data;
 
     setMode(localStorage.getItem(`storytime.mode.${storyId}`) || data.runtime?.mode || "novel");
@@ -223,6 +222,11 @@ async function loadStory(storyId) {
     console.error("Virhe ladattaessa tarinaa:", err);
     alert(err.message);
   }
+}
+
+function changeReadingView() {
+  if (isGenerating || activeTurnEditor || authoredTurn) return;
+  renderStoryView(currentStoryData, true);
 }
 
 function renderStoryView(data, preserveReadingPosition = false) {
@@ -253,19 +257,86 @@ function renderStoryView(data, preserveReadingPosition = false) {
 
   const stream = document.getElementById("proseStream");
   stream.classList.remove("hidden");
+  const authoredPanel = document.getElementById('authoredTurnModal');
+  if (stream.contains(authoredPanel)) document.body.appendChild(authoredPanel);
   stream.innerHTML = "";
   renderChoices([]);
+  const viewSelect = document.getElementById('readingView');
+  if (currentMode === 'roleplay') viewSelect.value = 'player';
+  viewSelect.disabled = currentMode === 'roleplay';
+  const selectedPlayer = data.characters.find(character => character.is_player_controlled);
+  const limited = viewSelect.value === 'player';
+  const navigation = document.getElementById('chapterNavigation');
+  navigation.replaceChildren();
+  let lastChapter = null;
+  let lastViewpoint = null;
 
   if (data.turns && data.turns.length > 0) {
     data.turns.forEach(turn => {
-      appendTurnToView(turn, false);
+      const metadata = data.reading_metadata?.[turn.id] || {};
+      const playerView = metadata.player_views?.[selectedPlayer?.id];
+      const chapter = metadata.chapter_id || turn.scene_id;
+      if (chapter !== lastChapter) {
+        const heading = document.createElement('h2');
+        heading.className = 'chapter-heading';
+        heading.id = `chapter-${chapter}`;
+        const chapterMetadata = Object.values(data.reading_metadata || {}).find(entry => entry.chapter_id === chapter &&
+          (limited ? entry.player_views?.[selectedPlayer?.id]?.chapter_title : entry.chapter_title));
+        const chapterTitle = limited ? chapterMetadata?.player_views?.[selectedPlayer?.id]?.chapter_title : chapterMetadata?.chapter_title;
+        heading.textContent = chapterTitle || `Luku ${navigation.children.length + 1}`;
+        stream.appendChild(heading);
+        const option = document.createElement('option');
+        option.value = heading.id;
+        option.textContent = heading.textContent;
+        navigation.appendChild(option);
+        lastChapter = chapter;
+      }
+      const viewpoint = limited ? (selectedPlayer?.name || 'Ei pelaajahahmoa') : 'Kertoja';
+      if (viewpoint !== lastViewpoint) {
+        const marker = document.createElement('p');
+        marker.className = 'viewpoint-marker';
+        marker.textContent = viewpoint;
+        stream.appendChild(marker);
+        lastViewpoint = viewpoint;
+      }
+      appendTurnToView(limited ? {...turn, id: null, director_prose: playerView?.prose || 'Tälle vuorolle ei ole tallennettu tämän hahmon rajattua näkökulmaa.'} : turn, false);
+      if (document.getElementById('showRecaps').checked) {
+        const recap = limited ? playerView?.recap : metadata.recap;
+        if (recap) {
+          const details = document.createElement('details');
+          details.className = 'reading-recap';
+          const summary = document.createElement('summary');
+          summary.textContent = 'Kertaus';
+          const text = document.createElement('p');
+          text.textContent = recap;
+          details.append(summary, text);
+          stream.appendChild(details);
+        }
+      }
     });
     const lastTurn = data.turns[data.turns.length - 1];
-    if (lastTurn && lastTurn.choices && lastTurn.choices.length > 0) {
-      renderChoices(lastTurn.choices);
-    }
+    const lastChoices = limited ? data.reading_metadata?.[lastTurn.id]?.player_views?.[selectedPlayer?.id]?.choices : lastTurn.choices;
+    renderChoices(lastChoices || []);
   }
 
+  const writingArea = document.createElement('div');
+  writingArea.className = 'story-writing-area';
+  writingArea.title = 'Tuplaklikkaa kirjoittaaksesi oman jatkokappaleen';
+  const hint = document.createElement('span');
+  hint.className = 'writing-hint';
+  hint.textContent = 'Tuplaklikkaa tähän kirjoittaaksesi oman jatkon';
+  writingArea.appendChild(hint);
+  writingArea.setAttribute('aria-label', 'Kirjoita oma jatkokappale');
+  writingArea.setAttribute('role', 'button');
+  writingArea.tabIndex = 0;
+  writingArea.ondblclick = event => { if (event.target === writingArea || event.target === hint) openAuthoredTurn(); };
+  writingArea.onkeydown = event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openAuthoredTurn();
+    }
+  };
+  stream.appendChild(writingArea);
   scrollArea.scrollTop = preserveReadingPosition ? readingPosition : scrollArea.scrollHeight;
 }
 
@@ -318,11 +389,15 @@ function appendTurnToView(turn, animate = true) {
   turnEl.appendChild(headerEl);
 
   const paragraphs = (turn.director_prose || "").split("\n\n").filter(p => p.trim().length > 0);
+  const proseElement = document.createElement('div');
+  proseElement.className = 'turn-prose';
   paragraphs.forEach(p => {
     const pEl = document.createElement("p");
     pEl.textContent = p.trim();
-    turnEl.appendChild(pEl);
+    if (turn.id) pEl.ondblclick = event => openTurnEditor(turn, turnEl, event);
+    proseElement.appendChild(pEl);
   });
+  turnEl.appendChild(proseElement);
 
   stream.appendChild(turnEl);
 }
@@ -392,15 +467,15 @@ function deleteCurrentActiveStory() {
 
 function renderInspector(data) {
   const meta = data.meta;
-  document.getElementById("worldLoreDisplay").textContent = meta.world_lore || "Ei maailmankuvausta saatavilla.";
-  document.getElementById("worldLoreInput").value = meta.world_lore || "";
+  document.getElementById("worldLoreDisplay").textContent = data.runtime?.world_description || meta.world_lore || "Ei maailmankuvausta saatavilla.";
+  document.getElementById("worldLoreInput").value = data.runtime?.world_description || meta.world_lore || "";
   document.getElementById("storyGenreText").textContent = meta.genre || "-";
 
-  document.getElementById("directorPlotDisplay").textContent = meta.director_plot_arc || "Ei juonisuunnitelmaa.";
-  document.getElementById("directorPlotInput").value = meta.director_plot_arc || "";
+  document.getElementById("directorPlotDisplay").textContent = data.runtime?.director_plan || meta.director_plot_arc || "Ei juonisuunnitelmaa.";
+  document.getElementById("directorPlotInput").value = data.runtime?.director_plan || meta.director_plot_arc || "";
 
-  document.getElementById("directorNotesDisplay").textContent = meta.director_notes || "Ei muistiinpanoja.";
-  document.getElementById("directorNotesInput").value = meta.director_notes || "";
+  document.getElementById("directorNotesDisplay").textContent = data.runtime?.director_notes || meta.director_notes || "Ei muistiinpanoja.";
+  document.getElementById("directorNotesInput").value = data.runtime?.director_notes || meta.director_notes || "";
 
   const chronicleList = document.getElementById("chronicleList");
   chronicleList.innerHTML = "";
@@ -570,7 +645,7 @@ function filterAndRenderCharacters() {
   const sortBy = document.getElementById("charSortSelect")?.value || "activity";
 
   let filtered = characters.filter(c => {
-    if (activeCharFilter === "active" && c.status === "archived") return false;
+    if (activeCharFilter === "active" && c.status !== "active") return false;
     if (activeCharFilter === "archived" && c.status !== "archived") return false;
     if (searchTerm && !c.name.toLowerCase().includes(searchTerm)) return false;
     return true;
@@ -620,6 +695,12 @@ function renderCharacterAccordion(characters) {
           <strong>Mielentila:</strong>
           <p>${escapeHtml(char.mental_state || 'Rauhallinen')}</p>
         </div>
+        <div class="state-item private-detail">
+          <strong>Viimeisin aie:</strong>
+          <p>${escapeHtml(currentStoryData.last_intentions?.[char.id]?.action_and_speech || 'Ei tallennettua aietta.')}</p>
+          <strong>Omat aiemmat ajatukset:</strong>
+          <p>${escapeHtml(currentStoryData.last_intentions?.[char.id]?.internal_monologue || 'Ei tallennettuja ajatuksia.')}</p>
+        </div>
         ${char.secret_motive && (document.getElementById('revealSecrets')?.checked || (currentMode === 'roleplay' && isPlayer)) ? `
         <div class="state-item">
           <strong>Salainen motiivi:</strong>
@@ -628,7 +709,7 @@ function renderCharacterAccordion(characters) {
 
         <div class="char-actions-row">
           <button class="btn btn-secondary btn-xs edit-character">Muokkaa</button>
-          ${!isPlayer ? `<button class="btn btn-primary btn-xs play-character">Pelaa hahmona</button>` : ''}
+          ${!isPlayer && char.status === 'active' && currentStoryData.active_scene?.active_character_ids.includes(char.id) ? `<button class="btn btn-primary btn-xs play-character">Pelaa hahmona</button>` : ''}
         </div>
 
         <div class="memory-stream-container private-detail mt-4">
@@ -785,9 +866,11 @@ function updateActivePlayerBadge(characters) {
 // --- Roolitilat ja Tarinan Edistäminen ---
 
 function setMode(mode) {
+  const previousMode = currentMode;
   mode = ({reader: 'novel', player: 'roleplay', director: 'simulation'})[mode] || mode;
   if (!['novel', 'simulation', 'roleplay'].includes(mode)) mode = 'novel';
   currentMode = mode;
+  if (previousMode === 'roleplay' && mode !== 'roleplay') document.getElementById('readingView').value = 'narrator';
   document.body.dataset.mode = mode;
   if (currentStoryId) localStorage.setItem(`storytime.mode.${currentStoryId}`, mode);
   document.querySelectorAll(".segment-btn").forEach(b => b.classList.remove("active"));
@@ -803,14 +886,15 @@ function setMode(mode) {
   document.querySelectorAll('.segment-btn').forEach(element => element.setAttribute('aria-pressed', element.classList.contains('active')));
   updateActivePlayerBadge();
   if (currentStoryData) filterAndRenderCharacters();
+  if (currentStoryData && !isGenerating && !activeTurnEditor && !authoredTurn) renderStoryView(currentStoryData, true);
 }
 
 function showLiveAgentBar(show, initialText) {
-  const bar = document.getElementById("liveAgentBar");
+  const bar = document.getElementById("turnProgress");
   const loading = document.getElementById("loadingIndicator");
   if (show) {
     bar?.classList.remove("hidden");
-    loading?.classList.remove("hidden");
+    loading?.classList.add("hidden");
     if (initialText && document.getElementById("livePhaseText")) {
       document.getElementById("livePhaseText").textContent = initialText;
     }

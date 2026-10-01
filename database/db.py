@@ -101,7 +101,7 @@ async def _initialize_story_db(story_id: str):
 
 # --- Tarinan metatiedot ---
 
-async def save_story_meta(story_id: str, meta: StoryMeta):
+async def save_story_meta(story_id: str, meta: StoryMeta, runtime_updates: Optional[Dict[str, Any]] = None):
     db_path = get_db_path(story_id)
     await init_story_db(story_id)
     async with aiosqlite.connect(db_path) as db:
@@ -116,6 +116,12 @@ async def save_story_meta(story_id: str, meta: StoryMeta):
                 meta.theme_color or ""
             )
         )
+        if runtime_updates:
+            async with db.execute("SELECT state_json FROM story_runtime WHERE id = 1") as cursor:
+                row = await cursor.fetchone()
+            state = json.loads(row[0]) if row else {}
+            state.update(runtime_updates)
+            await db.execute("INSERT INTO story_runtime VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json", (json.dumps(state),))
         await db.commit()
 
 async def get_story_meta(story_id: str) -> Optional[StoryMeta]:

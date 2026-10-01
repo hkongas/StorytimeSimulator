@@ -8,13 +8,13 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
+from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from dotenv import set_key
 from pydantic import BaseModel, Field
 
 from config import settings
-from core.types import StoryInitRequest, AdvanceStoryRequest, StoryMeta
+from core.types import StoryInitRequest, AdvanceStoryRequest, StoryMeta, TurnResponse
 from core.llm_client import LLMClient
 from core.prompt_loader import prompt_loader
 from core.profile_store import KEY_FIELDS, load_profiles, save_profile_keys
@@ -31,6 +31,12 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1
 engine = StoryEngine()
 jobs: dict[tuple[str, str], dict] = {}
 background_tasks: set[asyncio.Task] = set()
+
+
+def publish_progress(job: dict, event: dict):
+    job.setdefault("progress", []).append(event)
+    job["progress"] = job["progress"][-100:]
+    job.setdefault("changed", asyncio.Event()).set()
 
 
 def story_busy(story_id: str | None = None) -> bool:
@@ -70,6 +76,7 @@ async def run_turn_job(story_id: str, req: AdvanceStoryRequest, job: dict):
         ):
             if event["type"] == "phase":
                 job["message"] = event["message"]
+                publish_progress(job, event)
             elif event["type"] == "turn_complete":
                 job.update(status="completed", data=event["data"])
     except asyncio.CancelledError:
@@ -81,6 +88,8 @@ async def run_turn_job(story_id: str, req: AdvanceStoryRequest, job: dict):
     except Exception as error:
         logger.exception("Vuorotyö epäonnistui")
         job.update(status="failed", message=str(error))
+    finally:
+        job.setdefault("changed", asyncio.Event()).set()
 
 
 @app.post("/api/stories/{story_id}/turn-jobs")
@@ -109,6 +118,7 @@ async def start_turn_job(story_id: str, req: AdvanceStoryRequest):
             background_tasks.discard(completed)
             if completed.cancelled() and job["status"] == "running":
                 job.update(status="cancelled", message="Generointi keskeytettiin. Tarinaa ei muutettu.")
+                job.setdefault("changed", asyncio.Event()).set()
         task.add_done_callback(finish_task)
     return {"request_id": req.request_id, "status": jobs[key]["status"]}
 
@@ -119,11 +129,47 @@ async def get_turn_job(story_id: str, request_id: str):
         raise HTTPException(404, "Tarinaa ei löydy.")
     job = jobs.get((story_id, request_id))
     if job:
-        return {key: value for key, value in job.items() if key not in {"payload", "task"}}
+        if job["status"] == "completed":
+            try:
+                await turn_store.verify_committed_turn(story_id, TurnResponse.model_validate(job["data"]))
+            except turn_store.TurnConflictError as error:
+                return {"status": "failed", "message": str(error)}
+        return {key: value for key, value in job.items() if key not in {"payload", "task", "changed"}}
     receipt = await turn_store.get_receipt(story_id, request_id)
     if receipt:
+        await turn_store.verify_committed_turn(story_id, receipt)
         return {"status": "completed", "data": receipt.model_dump()}
     raise HTTPException(404, "Työtä ei löydy. Palvelin on voinut käynnistyä uudelleen.")
+
+
+@app.get("/api/stories/{story_id}/turn-jobs/{request_id}/events")
+async def stream_turn_events(story_id: str, request_id: str, request: Request):
+    await get_turn_job(story_id, request_id)
+    async def events():
+        sent = 0
+        while not await request.is_disconnected():
+            job = jobs.get((story_id, request_id))
+            changed = job.setdefault("changed", asyncio.Event()) if job else None
+            if changed:
+                changed.clear()
+            if job:
+                progress = job.get("progress", [])
+                for event in progress[sent:]:
+                    yield "event: progress\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                sent = len(progress)
+            if not job or job["status"] != "running":
+                try:
+                    result = await get_turn_job(story_id, request_id)
+                except (ValueError, HTTPException) as error:
+                    result = {"status": "failed", "message": str(error)}
+                yield "event: result\ndata: " + json.dumps(result, ensure_ascii=False) + "\n\n"
+                return
+            try:
+                await asyncio.wait_for(changed.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                yield 'event: heartbeat\ndata: {"status":"running"}\n\n'
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.delete("/api/stories/{story_id}/turn-jobs/{request_id}")
@@ -176,14 +222,17 @@ async def get_story_details(story_id: str):
     full_text = txt_path.read_text(encoding="utf-8") if txt_path.exists() else ""
     runtime = await turn_store.get_runtime(story_id)
     can_undo = await turn_store.can_rollback(story_id)
+    reading_metadata = await turn_store.get_reading_metadata(story_id)
     if revision != await turn_store.get_revision(story_id):
         raise turn_store.TurnConflictError("Tarina muuttui latauksen aikana. Lataa se uudelleen.")
 
     return {
         "meta": meta,
         "characters": characters,
+        "last_intentions": {character.id: await turn_store.get_last_intention(story_id, character.id) for character in characters},
         "active_scene": active_scene,
         "turns": turns,
+        "reading_metadata": reading_metadata,
         "chronicle": chronicle,
         "runtime": runtime,
         "revision": revision,
@@ -297,7 +346,10 @@ async def update_story_meta(story_id: str, req: StoryMetaUpdate):
     if req.theme_color is not None:
         meta.theme_color = req.theme_color
 
-    await db.save_story_meta(story_id, meta)
+    runtime_updates = {target: getattr(req, source) for source, target in (
+        ("world_lore", "world_description"), ("director_plot_arc", "director_plan"), ("director_notes", "director_notes"))
+        if getattr(req, source) is not None}
+    await db.save_story_meta(story_id, meta, runtime_updates=runtime_updates)
     return {"status": "success", "meta": meta}
 
 class CharacterUpdateRequest(BaseModel):

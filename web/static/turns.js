@@ -7,8 +7,9 @@ let editorSaving = false;
 let authoredTurn = null;
 let authoredBusy = false;
 
-function openAuthoredTurn() {
-  if (!currentStoryId || isGenerating || activeTurnEditor || editorSaving || authoredTurn) return;
+async function openAuthoredTurn() {
+  if (!currentStoryId || isGenerating || authoredTurn) return;
+  if (!await finishTurnEditor()) return;
   document.getElementById('autoContinue').checked = false;
   authoredTurn = {storyId: currentStoryId, preview: null};
   document.getElementById('authoredStatus').textContent = '';
@@ -16,8 +17,13 @@ function openAuthoredTurn() {
   document.getElementById('authoredPreview').classList.add('hidden');
   document.getElementById('authoredAcceptBtn').classList.add('hidden');
   document.getElementById('authoredAnalyzeBtn').classList.remove('hidden');
-  document.getElementById('authoredProse').disabled = false;
-  document.getElementById('authoredTurnModal').classList.remove('hidden');
+  document.getElementById('authoredProse').contentEditable = 'plaintext-only';
+  const panel = document.getElementById('authoredTurnModal');
+  panel.removeAttribute('aria-modal');
+  panel.setAttribute('role', 'region');
+  document.querySelector('.story-writing-area').appendChild(panel);
+  panel.classList.remove('hidden');
+  document.getElementById('authoredProse').focus({preventScroll: true});
   syncTurnControls();
 }
 
@@ -37,7 +43,7 @@ function setAuthoredBusy(busy) {
   authoredBusy = busy;
   for (const id of ['authoredAnalyzeBtn', 'authoredAcceptBtn', 'authoredCancelBtn']) document.getElementById(id).disabled = busy;
   document.querySelector('#authoredTurnModal .modal-close').disabled = busy;
-  document.getElementById('authoredProse').disabled = busy || Boolean(authoredTurn?.preview);
+  document.getElementById('authoredProse').contentEditable = busy || Boolean(authoredTurn?.preview) ? 'false' : 'plaintext-only';
   syncTurnControls();
 }
 
@@ -78,7 +84,7 @@ function renderAuthoredPreview(preview) {
 
 async function analyzeAuthoredTurn() {
   if (!authoredTurn || authoredBusy) return;
-  const prose = document.getElementById('authoredProse').value;
+  const prose = document.getElementById('authoredProse').innerText;
   if (!prose.trim()) return;
   const record = authoredTurn;
   setAuthoredBusy(true);
@@ -110,7 +116,8 @@ async function acceptAuthoredTurn() {
     const result = await response.json();
     authoredTurn = null;
     document.getElementById('authoredTurnModal').classList.add('hidden');
-    document.getElementById('authoredProse').value = '';
+    document.getElementById('authoredProse').textContent = '';
+    document.body.appendChild(document.getElementById('authoredTurnModal'));
     setAuthoredBusy(false);
     await loadStory(record.storyId);
     turnNotice(['Oma jatkokappale tallennettu.', ...(result.data.warnings || [])].join(' '));
@@ -119,62 +126,99 @@ async function acceptAuthoredTurn() {
   } finally { setAuthoredBusy(false); }
 }
 
-function openTurnEditor(turn, turnElement) {
-  if (isGenerating || activeTurnEditor || editorSaving) return;
-  document.getElementById('autoContinue').checked = false;
-  const storyId = currentStoryId;
-  const revision = currentStoryData.revision;
-  const editor = document.createElement('div');
-  editor.className = 'turn-editor';
-  const textarea = document.createElement('textarea');
-  textarea.className = 'styled-input prose-editor-input';
-  textarea.value = turn.director_prose;
-  textarea.setAttribute('aria-label', 'Vuoron teksti');
-  const actions = document.createElement('div');
-  actions.className = 'turn-editor-actions';
-  const save = document.createElement('button');
-  save.className = 'btn btn-primary btn-sm';
-  save.textContent = 'Tallenna vain teksti';
-  const cancel = document.createElement('button');
-  cancel.className = 'btn btn-secondary btn-sm';
-  cancel.textContent = 'Peruuta';
-  cancel.onclick = () => {
-    if (editorSaving) return;
-    editor.remove();
-    turnElement.querySelectorAll(':scope > p').forEach(paragraph => paragraph.hidden = false);
+let inlineSave = null;
+
+async function finishTurnEditor() {
+  if (inlineSave) return inlineSave;
+  const record = activeTurnEditor;
+  if (!record) return true;
+  const prose = record.element.innerText;
+  if (prose === record.original) {
+    record.element.contentEditable = 'false';
+    record.element.removeAttribute('role');
+    record.element.classList.remove('is-editing');
     activeTurnEditor = null;
     syncTurnControls();
-  };
-  save.onclick = async () => {
-    if (!textarea.value.trim()) return;
-    editorSaving = true;
-    save.disabled = cancel.disabled = true;
+    return true;
+  }
+  if (!prose.trim()) {
+    turnNotice('Kappale ei voi olla tyhjä. Muutoksia ei tallennettu.');
+    return false;
+  }
+  editorSaving = true;
+  record.element.contentEditable = 'false';
+  syncTurnControls();
+  inlineSave = (async () => {
     try {
-      const response = await fetch(`/api/stories/${storyId}/turns/${turn.id}`, {
+      const response = await fetch(`/api/stories/${record.storyId}/turns/${record.turn.id}`, {
         method: 'PUT', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({prose: textarea.value, expected_revision: revision, sync_state: false})
+        body: JSON.stringify({prose, expected_revision: record.revision, sync_state: false})
       });
       if (!response.ok) throw new Error((await response.json()).detail || 'Tallennus epäonnistui.');
+      const result = await response.json();
+      record.turn.director_prose = prose;
+      currentStoryData.revision = result.revision;
+      record.element.classList.remove('is-editing');
+      record.element.removeAttribute('role');
       activeTurnEditor = null;
-      editorSaving = false;
-      await loadStory(storyId);
-      turnNotice('Teksti tallennettu. Hahmojen muistit ja maailman tila säilyivät ennallaan.');
+      turnNotice('Tekstikorjaus tallennettu.');
+      return true;
     } catch (error) {
-      turnNotice(error.message);
+      record.element.contentEditable = 'true';
+      turnNotice(`${error.message} Teksti säilyy muokkaustilassa.`);
+      return false;
     } finally {
       editorSaving = false;
-      save.disabled = cancel.disabled = false;
+      inlineSave = null;
       syncTurnControls();
     }
-  };
-  actions.append(save, cancel);
-  editor.append(textarea, actions);
-  turnElement.querySelectorAll(':scope > p').forEach(paragraph => paragraph.hidden = true);
-  turnElement.append(editor);
-  activeTurnEditor = editor;
-  syncTurnControls();
-  textarea.focus();
+  })();
+  return inlineSave;
 }
+
+async function openTurnEditor(turn, turnElement, event) {
+  if (isGenerating || authoredTurn) return;
+  const element = turnElement.querySelector('.turn-prose');
+  if (activeTurnEditor?.element === element) return;
+  let caret;
+  if (event && document.caretPositionFromPoint) {
+    const position = document.caretPositionFromPoint(event.clientX, event.clientY);
+    if (position && element.contains(position.offsetNode)) caret = {node: position.offsetNode, offset: position.offset};
+  } else if (event && document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(event.clientX, event.clientY);
+    if (range && element.contains(range.startContainer)) caret = {node: range.startContainer, offset: range.startOffset};
+  }
+  if (!await finishTurnEditor()) return;
+  document.getElementById('autoContinue').checked = false;
+  element.contentEditable = 'plaintext-only';
+  element.classList.add('is-editing');
+  element.setAttribute('role', 'textbox');
+  element.setAttribute('aria-label', 'Vuoron teksti');
+  element.setAttribute('aria-multiline', 'true');
+  activeTurnEditor = {element, turn, storyId: currentStoryId, revision: currentStoryData.revision, original: element.innerText};
+  element.onblur = () => { finishTurnEditor(); };
+  element.onpaste = event => {
+    event.preventDefault();
+    document.execCommand('insertText', false, event.clipboardData.getData('text/plain'));
+  };
+  element.focus({preventScroll: true});
+  if (caret?.node.isConnected) {
+    const range = document.createRange();
+    range.setStart(caret.node, caret.offset);
+    range.collapse(true);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  syncTurnControls();
+}
+
+addEventListener('beforeunload', event => {
+  if (activeTurnEditor || authoredTurn || editorSaving) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
 
 async function undoLastTurn() {
   if (!currentStoryId || isGenerating || activeTurnEditor || editorSaving || !currentStoryData?.can_undo) return;
@@ -212,15 +256,22 @@ function turnNotice(message, retry = false) {
 function syncTurnControls() {
   isGenerating = Boolean(pendingTurns[currentStoryId]);
   const blocked = isGenerating || Boolean(activeTurnEditor) || editorSaving || Boolean(authoredTurn);
+  document.querySelectorAll('.segment-btn').forEach(button => button.disabled = blocked);
+  document.getElementById('readingView').disabled = blocked || currentMode === 'roleplay';
+  document.getElementById('showRecaps').disabled = blocked;
   for (const id of ['advanceBtn', 'playerActBtn']) document.getElementById(id).disabled = blocked;
   for (const id of ['readerInput', 'playerInput', 'privateIntention', 'worldIntervention']) {
     document.getElementById(id).disabled = blocked;
   }
   document.querySelectorAll('.choice-btn, .edit-turn-btn').forEach(button => button.disabled = blocked);
   document.getElementById('undoTurnBtn').disabled = blocked || !currentStoryData?.can_undo;
-  document.getElementById('authoredTurnBtn').disabled = blocked || !currentStoryId;
-  document.getElementById('cancelTurnBtn').classList.toggle('hidden', !isGenerating);
+  const cancel = document.getElementById('cancelTurnBtn');
+  document.getElementById(currentMode === 'roleplay' ? 'playerControls' : 'readerControls').appendChild(cancel);
+  cancel.classList.toggle('hidden', !isGenerating);
+  document.getElementById('advanceBtn').classList.toggle('hidden', isGenerating && currentMode !== 'roleplay');
+  document.getElementById('playerActBtn').classList.toggle('hidden', isGenerating && currentMode === 'roleplay');
   if (!isGenerating) showLiveAgentBar(false);
+  document.querySelector('.story-writing-area')?.classList.toggle('hidden', isGenerating);
 }
 
 async function advanceStory() {
@@ -234,6 +285,10 @@ async function advanceStory() {
     custom_guidance: document.getElementById('worldIntervention').value.trim() || null
   }};
   pendingTurns[storyId] = record;
+  record.startedAt = Date.now();
+  document.getElementById('turnProgressLog').replaceChildren();
+  renderChoices([]);
+  showTurnProgress(record);
   savePendingTurns();
   syncTurnControls();
   await submitPendingTurn(record);
@@ -268,16 +323,48 @@ async function monitorTurn(record) {
   if (pendingTurns[record.storyId]?.payload.request_id !== requestId) return;
   if (pollingTurns.has(requestId)) return;
   pollingTurns.add(requestId);
+  let clock;
   try {
-    const response = await fetch(`/api/stories/${record.storyId}/turn-jobs/${requestId}`);
-    if (!response.ok) throw new Error('Työn tilaa ei saatu. Palauta yhteys tai lähetä sama pyyntö uudelleen.');
-    const result = await response.json();
+    const result = await new Promise((resolve, reject) => {
+      if (currentStoryId === record.storyId) showTurnProgress(record);
+      const source = new EventSource(`/api/stories/${record.storyId}/turn-jobs/${requestId}/events`);
+      source.onopen = () => {
+        if (currentStoryId === record.storyId) document.getElementById('turnConnectionStatus').textContent = 'Seurantayhteys auki';
+      };
+      source.addEventListener('heartbeat', () => {
+        if (currentStoryId === record.storyId) document.getElementById('turnConnectionStatus').textContent = 'Palvelin vastaa · työ jatkuu';
+      });
+      clock = setInterval(() => {
+        if (currentStoryId === record.storyId) document.getElementById('turnElapsed').textContent = `${Math.max(0, Math.floor((Date.now() - (record.startedAt || Date.now())) / 1000))} s`;
+      }, 1000);
+      source.addEventListener('progress', event => {
+        const progress = JSON.parse(event.data);
+        if (currentStoryId === record.storyId) {
+          showLiveAgentBar(true, progress.message);
+          const item = document.createElement('li');
+          item.textContent = progress.message;
+          if (progress.character_thought && record.payload.mode !== 'roleplay') {
+            const thought = document.createElement('details');
+            thought.className = 'progress-thought';
+            const heading = document.createElement('summary');
+            heading.textContent = 'Hahmon ajatus';
+            const text = document.createElement('p');
+            text.textContent = progress.character_thought;
+            thought.append(heading, text);
+            item.appendChild(thought);
+          }
+          document.getElementById('turnProgressLog').appendChild(item);
+          const log = document.getElementById('turnProgressLog');
+          while (log.children.length > 3) log.firstElementChild.remove();
+        }
+      });
+      source.addEventListener('result', event => { source.close(); resolve(JSON.parse(event.data)); });
+      source.onerror = () => {
+        source.close();
+        reject(new Error('Seurantayhteys katkesi. Palauta yhteys jatkaaksesi saman työn seurantaa.'));
+      };
+    });
     if (pendingTurns[record.storyId]?.payload.request_id !== requestId) return;
-    if (result.status === 'running') {
-      if (currentStoryId === record.storyId) showLiveAgentBar(true, result.message);
-      setTimeout(() => monitorTurn(record), 900);
-      return;
-    }
     delete pendingTurns[record.storyId];
     savePendingTurns();
     if (currentStoryId !== record.storyId) return;
@@ -292,7 +379,7 @@ async function monitorTurn(record) {
       const auto = document.getElementById('autoContinue');
       const budget = document.getElementById('autoBudget');
       const remaining = Math.min(10, Math.max(1, Number(budget.value) || 1)) - 1;
-      if (auto.checked && currentMode !== 'roleplay' && remaining > 0) {
+      if (auto.checked && currentMode !== 'roleplay' && !result.data.requires_player_input && remaining > 0) {
         budget.value = remaining;
         setTimeout(() => { if (currentStoryId === record.storyId && auto.checked) advanceStory(); }, 500);
       } else auto.checked = false;
@@ -302,13 +389,25 @@ async function monitorTurn(record) {
     }
   } catch (error) {
     if (currentStoryId === record.storyId) {
-      showLiveAgentBar(false);
+      showLiveAgentBar(true, 'Seuranta keskeytyi, mutta taustatyö voi edelleen jatkua.');
+      document.getElementById('turnConnectionStatus').textContent = 'Yhteys katkennut';
       document.getElementById('autoContinue').checked = false;
       turnNotice(error.message, true);
     }
   } finally {
+    clearInterval(clock);
     pollingTurns.delete(requestId);
   }
+}
+
+function showTurnProgress(record) {
+  renderChoices([]);
+  showLiveAgentBar(true, 'Valmistellaan tarinan jatkoa...');
+  document.getElementById('submittedAction').textContent = [record.payload.user_input,
+    record.payload.custom_guidance && `Maailmanmuutos: ${record.payload.custom_guidance}`].filter(Boolean).join('\n') || 'Tarina jatkuu itsenäisesti.';
+  document.getElementById('turnConnectionStatus').textContent = 'Yhdistetään seurantaan...';
+  document.getElementById('turnElapsed').textContent = '';
+  document.querySelector('.story-writing-area')?.classList.add('hidden');
 }
 
 function resumePendingTurn(storyId) {

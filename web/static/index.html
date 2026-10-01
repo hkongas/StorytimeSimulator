@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=20260930-authored1">
+  <link rel="stylesheet" href="/static/style.css?v=20261001-reading1">
   <script src="/static/i18n.js?v=20260930-azure3"></script>
 </head>
 <body class="theme-dark">
@@ -108,13 +108,6 @@
       </header>
 
       <!-- Reaaliaikainen Agenttityöskentelyn Tilanäkymä (Live Agent Bar) -->
-      <div id="liveAgentBar" class="live-agent-bar hidden">
-        <div class="agent-status-indicator">
-          <span class="pulsing-dot"></span>
-          <span id="livePhaseText" class="live-phase-text">Agentit simuloivat...</span>
-        </div>
-        <div id="liveActiveAgents" class="live-active-agents"></div>
-      </div>
 
       <!-- Tarina-alue -->
       <main class="story-view-area">
@@ -130,6 +123,14 @@
         </div>
 
         <div id="storyScrollArea" class="story-content">
+          <nav class="reading-toolbar" aria-label="Lukunäkymä">
+            <select id="readingView" aria-label="Näkökulma" onchange="changeReadingView()">
+              <option value="narrator">Kertoja</option>
+              <option value="player">Pelaajan näkökulma</option>
+            </select>
+            <select id="chapterNavigation" aria-label="Sisällysluettelo" onchange="document.getElementById(this.value)?.scrollIntoView({block:'start'})"></select>
+            <label><input id="showRecaps" type="checkbox" onchange="changeReadingView()"> Kertaukset</label>
+          </nav>
           <div id="emptyStoryNotice" class="empty-state">
             <div class="empty-icon">📖</div>
             <h3 data-i18n="emptyStoryTitle">Ei avointa tarinaa</h3>
@@ -138,6 +139,12 @@
           </div>
           <!-- Generoidut proosakappaleet renderöityvät tähän -->
           <div id="proseStream" class="prose-stream hidden"></div>
+          <section id="turnProgress" class="turn-progress hidden" aria-label="Tarinan jatkon valmistuminen">
+            <p id="submittedAction" class="submitted-action"></p>
+            <div class="agent-status-indicator"><span class="pulsing-dot"></span><span id="livePhaseText" role="status">Valmistellaan jatkoa...</span></div>
+            <div class="progress-connection"><span id="turnConnectionStatus">Yhdistetään...</span><span id="turnElapsed"></span></div>
+            <ul id="turnProgressLog" aria-live="polite"></ul>
+          </section>
 
         <!-- Dynaamiset Valintanapit (Interactive Choices) -->
         <div id="choicesContainer" class="choices-container hidden">
@@ -193,7 +200,6 @@
             <!-- Ohjaajatilan syöte -->
           </div>
           <div class="composer-options">
-            <button id="authoredTurnBtn" class="btn btn-secondary btn-sm" onclick="openAuthoredTurn()" title="Kirjoita oma valmis jatko tarinaan">Oma jatkokappale</button>
             <details id="privateIntentionGroup" class="hidden">
               <summary data-i18n="privateIntention">Yksityinen aikomus</summary>
               <textarea id="privateIntention" class="styled-textarea" rows="3" maxlength="4000" aria-label="Pelaajahahmon yksityinen aikomus" placeholder="Mitä hahmosi tavoittelee tai jättää sanomatta?"></textarea>
@@ -721,7 +727,7 @@
       </div>
       <div class="modal-body">
         <label for="authoredProse">Valmis teksti</label>
-        <textarea id="authoredProse" class="styled-textarea" rows="10" maxlength="20000"></textarea>
+        <div id="authoredProse" class="turn-prose authored-prose" role="textbox" aria-label="Oma jatkokappale" aria-multiline="true" contenteditable="plaintext-only"></div>
         <p id="authoredStatus" role="status"></p>
         <div id="authoredPreview" class="hidden">
           <h3>Hyväksyttävät muutokset</h3>
@@ -776,7 +782,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260930-authored2"></script>
-  <script src="/static/turns.js?v=20260930-authored2"></script>
+  <script src="/static/app.js?v=20261001-reading1"></script>
+  <script src="/static/turns.js?v=20261001-reading1"></script>
 </body>
 </html>

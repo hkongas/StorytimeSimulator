@@ -1,0 +1,2 @@
+MODE: ROLEPLAY. Player input and private intention describe the designated player's authoritative ATTEMPT, not guaranteed success. Do not choose their next major voluntary action.
+Other capable characters decide independently from their own observations. Apply binding world interventions before those decisions. Resolve the player's attempt with consequences, then stop at their next meaningful choice. Choices must be available to that player, not author-level plot commands.

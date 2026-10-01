@@ -42,6 +42,10 @@ class CharacterStateUpdate(BaseModel):
     new_memory: Optional[str] = Field(default="", description="Key memory trace/observation the character forms from these events")
 
 class ProseTurnResponse(BaseModel):
+    chapter_title: str = Field(default="", max_length=160, description="Current chapter title; keep stable until chapter ends")
+    director_plan: str = Field(default="", max_length=6000, description="Updated evolving plot arc: completed milestones, current conflict, plausible next developments; not a predetermined outcome")
+    director_notes: str = Field(default="", max_length=4000, description="Updated pacing notes, unresolved decisions and consequences to resolve next")
+    world_description: str = Field(default="", max_length=6000, description="Updated world description based only on established developments; retain enduring rules")
     prose: str = Field(min_length=1, description="Finished narrative prose in Finnish")
     events: List[StoryEvent] = Field(description="Authoritative events and the characters who perceived each event")
     summary: str = Field(min_length=1, max_length=6000, description="Updated cumulative story summary; retain important earlier developments")
@@ -51,6 +55,7 @@ class ProseTurnResponse(BaseModel):
     scene_location: Optional[str] = None
     scene_goal: Optional[str] = None
     chapter_end: bool = False
+    requires_player_input: bool = False
     character_state_updates: List[CharacterStateUpdate] = Field(default_factory=list, description="Director's authoritative updates to each character's condition, mental state, and memory based on what happened")
     active_character_ids: Optional[List[str]] = Field(default=None, description="List of character IDs who remain active/present in the scene for next turn")
     choices: List[str] = Field(default_factory=list, description="2-4 interesting choice suggestions for next turn")
@@ -60,9 +65,27 @@ class ProseTurnResponse(BaseModel):
     plot_pivot_note: Optional[str] = Field(default="", description="Note explaining plot change")
     image_prompt: Optional[str] = Field(default="", description="English image generation prompt for illustration")
 
+class TurnPlanResponse(BaseModel):
+    events: List[StoryEvent] = Field(default_factory=list)
+    character_state_updates: List[CharacterStateUpdate] = Field(default_factory=list)
+    spawned_characters: List[StoryInitCharacter] = Field(default_factory=list)
+    active_character_ids: List[str]
+    decision_character_ids: List[str]
+    scene_location: Optional[str] = None
+    scene_goal: str = Field(min_length=1, max_length=2000)
+    direction: str = Field(min_length=1, max_length=4000)
+    requires_player_input: bool = False
+
+
 class CharacterDecisionResponse(BaseModel):
     internal_monologue: str = Field(description="Private thoughts, emotions and motivations of the character in response to the situation")
     action_and_speech: str = Field(description="What the character attempts or intends to do and say out loud in Finnish")
+
+class PlayerViewResponse(BaseModel):
+    prose: str = Field(min_length=1, max_length=12000, description="Limited viewpoint story prose using only supplied private knowledge and perceived events")
+    recap: str = Field(min_length=1, max_length=4000, description="Cumulative recap limited to this character's knowledge; preserve uncertainty")
+    chapter_title: str = Field(min_length=1, max_length=160, description="Chapter title that reveals no unknown secret")
+    choices: List[str] = Field(default_factory=list, max_length=5, description="Possible actions based only on what this character knows; never in prose")
 
 def pydantic_to_json_schema(model: Type[BaseModel], name: Optional[str] = None, strict: bool = False) -> Dict[str, Any]:
     """Muuntaa Pydantic-mallin xAI / OpenAI -yhteensopivaksi response_format: json_schema -rakenteeksi."""

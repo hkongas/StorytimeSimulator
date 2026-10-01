@@ -253,9 +253,68 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         blocked = await self.client.post(endpoint, json=request, headers={"Origin": "https://outside.example"})
         self.assertEqual(blocked.status_code, 403)
 
+    async def test_sse_completed_job_replays_progress_and_result(self):
+        import web.api as api
+        created = await self.client.post("/api/stories", json={"title": "SSE test"})
+        sid = created.json()["data"]["story_id"]
+        endpoint = f"/api/stories/{sid}/turn-jobs"
+        await self.client.post(endpoint, json={"mode": "simulation", "request_id": "sse-test"})
+        await asyncio.gather(*api.background_tasks)
+        result = await self.client.get(endpoint + "/sse-test/events")
+        self.assertEqual(result.status_code, 200)
+        self.assertIn("text/event-stream", result.headers["content-type"])
+        self.assertIn("event: progress", result.text)
+        self.assertIn("aie valmis", result.text)
+        self.assertIn('"character_thought"', result.text)
+        self.assertIn("event: result", result.text)
+        self.assertIn('"status": "completed"', result.text)
+        api.jobs.clear()
+        recovered = await self.client.get(endpoint + "/sse-test/events")
+        self.assertIn('"status": "completed"', recovered.text)
+
+    async def test_roleplay_progress_hides_other_character_thoughts(self):
+        import web.api as api
+        created = await self.client.post("/api/stories", json={"title": "Private progress"})
+        sid = created.json()["data"]["story_id"]
+        await api.db.set_player_character(sid, "char_eerik")
+        endpoint = f"/api/stories/{sid}/turn-jobs"
+        await self.client.post(endpoint, json={"mode": "roleplay", "request_id": "private-progress"})
+        await asyncio.gather(*api.background_tasks)
+        phases = api.jobs[(sid, "private-progress")]["progress"]
+        character_phases = [phase for phase in phases if phase.get("phase") == "character_complete"]
+        self.assertTrue(character_phases)
+        self.assertTrue(all("character_thought" not in phase for phase in phases))
+
+    async def test_manual_director_edit_updates_runtime(self):
+        created = await self.client.post("/api/stories", json={"title": "Director edit"})
+        sid = created.json()["data"]["story_id"]
+        endpoint = f"/api/stories/{sid}"
+        result = await self.client.post(endpoint + "/meta", json={"director_plot_arc": "MANUAL_PLAN", "world_lore": "MANUAL_WORLD", "director_notes": "MANUAL_NOTES"})
+        self.assertEqual(result.status_code, 200)
+        details = (await self.client.get(endpoint)).json()
+        self.assertEqual(details["runtime"]["director_plan"], "MANUAL_PLAN")
+        self.assertEqual(details["runtime"]["world_description"], "MANUAL_WORLD")
+        self.assertEqual(details["runtime"]["director_notes"], "MANUAL_NOTES")
+
     async def test_prompt_paths_reject_escape(self):
         response = await self.client.get("/api/prompts/content", params={"path": "../../config.py"})
         self.assertEqual(response.status_code, 400)
+
+    async def test_completed_job_detects_missing_disk_turn(self):
+        import web.api as api
+        import aiosqlite
+        from database import db
+        created = await self.client.post("/api/stories", json={"title": "Missing turn test"})
+        story_id = created.json()["data"]["story_id"]
+        endpoint = f"/api/stories/{story_id}/turn-jobs"
+        await self.client.post(endpoint, json={"mode": "novel", "request_id": "disk-check"})
+        await asyncio.gather(*api.background_tasks)
+        async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+            await connection.execute("DELETE FROM scene_turns WHERE id = (SELECT MAX(id) FROM scene_turns)")
+            await connection.commit()
+        result = await self.client.get(endpoint + "/disk-check")
+        self.assertEqual(result.json()["status"], "failed")
+        self.assertIn("levyltä", result.json()["message"])
 
     async def test_profile_secrets_are_not_returned(self):
         response = await self.client.post("/api/settings/profile-secrets", json={"profiles": [{"id": "first", "xai_api_key": "synthetic-test-value"}, {"id": "second", "azure_openai_api_key": "other-test-value"}]})

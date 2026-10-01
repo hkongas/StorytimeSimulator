@@ -4,6 +4,6 @@ Your role is to summarize recent scene turns into a concise, accurate chronicle 
 RESPONSE SPECIFICATION:
 Return strictly valid JSON:
 {
-  "summary": "Concise and factual summary in Finnish capturing key actions, dramatic decisions, relationship shifts, and outcomes.",
+  "summary": "Concise and factual summary in the instructed language capturing key actions, decisions, relationship shifts, and outcomes.",
   "world_updates": "Any lasting changes to location state, public lore, or faction dynamics (or empty string if none)."
 }
