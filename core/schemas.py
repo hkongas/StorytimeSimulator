@@ -1,5 +1,55 @@
 from typing import List, Optional, Dict, Any, Type, Literal
-from pydantic import BaseModel, Field
+from uuid import uuid4
+from pydantic import BaseModel, Field, field_validator
+
+
+class SecretTruth(BaseModel):
+    id: str
+    fact: str
+    discoverable_via: str = ""
+    reveal_state: Literal["hidden", "hinted", "revealed"] = "hidden"
+    related_location_id: Optional[str] = None
+
+
+class StoryClock(BaseModel):
+    id: str
+    description: str
+    remaining_beats: int = Field(ge=0)
+    on_expire_effect: str = ""
+    visible: bool = False
+
+
+class OffscreenAgent(BaseModel):
+    id: str
+    name: str
+    goal: str
+    progress: str = ""
+    location: str = ""
+    next_move: str = ""
+    visible_to: List[str] = Field(default_factory=list)
+
+
+class StoryBibleResponse(BaseModel):
+    secret_truths: List[SecretTruth] = Field(min_length=4, max_length=8)
+    clocks: List[StoryClock] = Field(min_length=1, max_length=3)
+    offscreen_agents: List[OffscreenAgent] = Field(max_length=2)
+
+
+class RevealDecision(BaseModel):
+    truth_id: str
+    how: str
+
+
+class ClockTick(BaseModel):
+    clock_id: str
+    amount: int = Field(default=1, ge=1)
+
+
+class StateChange(BaseModel):
+    entity: str
+    entity_id: str
+    field: str
+    value: Any
 
 class StoryInitCharacter(BaseModel):
     id: str = Field(description="Unique short id, e.g. elias_korpela")
@@ -8,6 +58,12 @@ class StoryInitCharacter(BaseModel):
     gender: Optional[str] = Field(default="Unknown", description="Gender of character")
     appearance: str = Field(default="", description="Visual description, clothing, build")
     personality: str = Field(default="", description="Personality traits, habits, flaws")
+    speech_style: str = Field(default="", description="Distinct voice and speech habits")
+    values: str = Field(default="", description="Personal values that may conflict with others")
+    current_goal: str = Field(default="", description="Immediate personal goal")
+    fears: str = Field(default="", description="Specific fears and vulnerabilities")
+    skills: str = Field(default="", description="Useful capabilities")
+    limitations: str = Field(default="", description="Physical, social, or practical constraints")
     secret_motive: str = Field(default="", description="Hidden objective, trauma, ambition")
     public_bio: str = Field(default="", description="Public knowledge, reputation")
     physical_state: str = Field(default="Healthy and alert", description="Current physical condition")
@@ -17,8 +73,20 @@ class StoryInitCharacter(BaseModel):
     known_locations: List[str] = Field(default_factory=list, description="Locations known by this character")
 
 class StoryEvent(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
     description: str = Field(min_length=1, max_length=2000, description="Observable event only, no hidden thoughts or narrator-only facts")
     witnesses: List[str] = Field(description="IDs of characters who actually perceived the event; empty for a secret world event")
+    derived_from: str = Field(description="intent:<character_id>, consequence, routine, or world")
+    actor_id: Optional[str] = None
+
+    @field_validator("derived_from")
+    @classmethod
+    def valid_provenance(cls, value):
+        if value not in {"consequence", "routine", "world"} and not value.startswith("intent:"):
+            raise ValueError("derived_from must identify an intent or a world/consequence source")
+        if value.startswith("intent:") and not value.removeprefix("intent:").strip():
+            raise ValueError("intent provenance requires a character id")
+        return value
 
 
 class StoryInitScene(BaseModel):
@@ -33,6 +101,9 @@ class StoryInitResponse(BaseModel):
     director_notes: str = Field(description="Director's internal notes on themes, pacing, atmosphere")
     initial_characters: List[StoryInitCharacter] = Field(description="2-4 key characters starting the story")
     initial_scene: StoryInitScene = Field(description="The opening scene details and narrative prose")
+    secret_truths: List[SecretTruth] = Field(default_factory=list, max_length=8)
+    clocks: List[StoryClock] = Field(default_factory=list, max_length=3)
+    offscreen_agents: List[OffscreenAgent] = Field(default_factory=list, max_length=2)
 
 class CharacterStateUpdate(BaseModel):
     character_id: str = Field(description="The unique id of the character")
@@ -49,6 +120,7 @@ class ProseTurnResponse(BaseModel):
     prose: str = Field(min_length=1, description="Finished narrative prose in Finnish")
     events: List[StoryEvent] = Field(description="Authoritative events and the characters who perceived each event")
     summary: str = Field(min_length=1, max_length=6000, description="Updated cumulative story summary; retain important earlier developments")
+    recap_delta: str = Field(default="", max_length=1200, description="One to four sentences describing only this new beat")
     world_facts: List[str] = Field(default_factory=list, max_length=40)
     plot_threads: List[str] = Field(default_factory=list, max_length=20)
     decision_character_ids: List[str] = Field(default_factory=list, description="Characters needing an independent important decision next turn")
@@ -65,6 +137,13 @@ class ProseTurnResponse(BaseModel):
     plot_pivot_note: Optional[str] = Field(default="", description="Note explaining plot change")
     image_prompt: Optional[str] = Field(default="", description="English image generation prompt for illustration")
 
+    @field_validator("summary", mode="before")
+    @classmethod
+    def bound_summary(cls, value):
+        if isinstance(value, str) and len(value) > 6000:
+            return value[:5997].rsplit(" ", 1)[0] + "..."
+        return value
+
 class TurnPlanResponse(BaseModel):
     events: List[StoryEvent] = Field(default_factory=list)
     character_state_updates: List[CharacterStateUpdate] = Field(default_factory=list)
@@ -75,17 +154,40 @@ class TurnPlanResponse(BaseModel):
     scene_goal: str = Field(min_length=1, max_length=2000)
     direction: str = Field(min_length=1, max_length=4000)
     requires_player_input: bool = False
+    reveals: List[RevealDecision] = Field(default_factory=list)
+    clock_ticks: List[ClockTick] = Field(default_factory=list)
+    offscreen_moves: Dict[str, str] = Field(default_factory=dict)
+    state_changes: List[StateChange] = Field(default_factory=list)
 
 
 class CharacterDecisionResponse(BaseModel):
-    internal_monologue: str = Field(description="Private thoughts, emotions and motivations of the character in response to the situation")
-    action_and_speech: str = Field(description="What the character attempts or intends to do and say out loud in Finnish")
+    goal: str = Field(default="", description="The character's current goal")
+    time_horizon: str = Field(default="muutama sekunti")
+    action: str = Field(default="", description="One consequential goal-level action the character intends")
+    speech: str = Field(default="")
+    target: Optional[str] = None
+    volume: Literal["whisper", "normal", "shout"] = "normal"
+    if_interrupted: str = Field(default="")
+    private_thought: str = Field(default="")
+    memory: Optional[str] = None
+    importance: int = Field(default=5, ge=1, le=10)
+    belief_updates: List[str] = Field(default_factory=list)
+    goal_update: Optional[str] = None
+    internal_monologue: str = Field(default="", description="Private thoughts, emotions and motivations of the character")
+    action_and_speech: str = Field(default="", description="Compatibility representation of the character's attempted action and speech")
 
 class PlayerViewResponse(BaseModel):
     prose: str = Field(min_length=1, max_length=12000, description="Limited viewpoint story prose using only supplied private knowledge and perceived events")
-    recap: str = Field(min_length=1, max_length=4000, description="Cumulative recap limited to this character's knowledge; preserve uncertainty")
+    recap: str = Field(min_length=1, description="Cumulative recap limited to this character's knowledge; preserve uncertainty")
     chapter_title: str = Field(min_length=1, max_length=160, description="Chapter title that reveals no unknown secret")
     choices: List[str] = Field(default_factory=list, max_length=5, description="Possible actions based only on what this character knows; never in prose")
+
+    @field_validator("recap", mode="before")
+    @classmethod
+    def bound_recap(cls, value):
+        if isinstance(value, str) and len(value) > 4000:
+            return value[:3997].rsplit(" ", 1)[0] + "..."
+        return value
 
 def pydantic_to_json_schema(model: Type[BaseModel], name: Optional[str] = None, strict: bool = False) -> Dict[str, Any]:
     """Muuntaa Pydantic-mallin xAI / OpenAI -yhteensopivaksi response_format: json_schema -rakenteeksi."""

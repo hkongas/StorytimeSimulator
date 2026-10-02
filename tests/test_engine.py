@@ -31,6 +31,15 @@ class MockLLMClient(LLMClient):
                 "world_lore": "Vanha valtakunta on varjojen peitossa ja muinaiset linnat seisovat usvan keskellä.",
                 "director_plot_arc": "Sankarit löytävät salaisen riimukiven ja paljastavat hovin salajuonen.",
                 "director_notes": "Tumma ja mystinen ilmapiiri.",
+                "secret_truths": [
+                    {"id": "truth_ruin", "fact": "Raunioiden alla on vanha tunneli.", "discoverable_via": "Tutki kivipaaden alle."},
+                    {"id": "truth_scroll", "fact": "Käärö oli viety vartijan torniin.", "discoverable_via": "Etsi tornin sinetti."},
+                    {"id": "truth_brother", "fact": "Eerikin veli elää maanpaossa.", "discoverable_via": "Kohtaa pohjoinen viestinviejä."},
+                    {"id": "truth_mist", "fact": "Sumu nousee raunioiden alla olevasta lähteestä.", "discoverable_via": "Seuraa veden ääntä."}
+                ],
+                "clocks": [{"id": "clock_patrol", "description": "Vartijat lähestyvät.", "remaining_beats": 5,
+                            "on_expire_effect": "Vartijat saapuvat raunioille.", "visible": True}],
+                "offscreen_agents": [],
                 "initial_characters": [
                     {
                         "id": "char_eerik",
@@ -73,13 +82,16 @@ class MockLLMClient(LLMClient):
             present = inputs["scene"]["active_character_ids"]
             capable = [character["id"] for character in inputs["characters"] if character["id"] in present and character["status"] == "active"
                    and not (inputs["mode"] == "roleplay" and character["is_player_controlled"])]
-            decisions = capable if inputs["mode"] != "novel" else [identifier for identifier in capable if identifier in inputs["runtime"].get("decision_character_ids", [])]
-            return {"events": [], "active_character_ids": present, "decision_character_ids": decisions,
+            decisions = capable if inputs["mode"] != "novel" else [identifier for identifier in capable if identifier in inputs.get("next_decision_candidates", [])]
+            response = {"events": [], "active_character_ids": present, "decision_character_ids": decisions,
                 "scene_goal": inputs["scene"]["scene_goal"], "direction": "Resolve the next meaningful beat."}
+            if inputs.get("no_progress_beats", 0) >= 2:
+                response["clock_ticks"] = [{"clock_id": inputs["clocks"][0]["id"], "amount": 1}]
+            return response
         elif schema_name == "authored_reconciliation":
             return {
                 "prose": "Model must not replace user prose", "summary": "A bell rang.",
-                "events": [{"description": "A bell rings.", "witnesses": ["char_eerik"]}],
+                "events": [{"description": "A bell rings.", "witnesses": ["char_eerik"], "derived_from": "world"}],
                 "world_facts": ["The bell has rung."], "plot_threads": [], "decision_character_ids": ["char_eerik"],
                 "active_character_ids": ["char_eerik", "char_mira"],
                 "character_state_updates": [{"character_id": "char_eerik", "mental_state": "Alert"}]
@@ -96,7 +108,7 @@ class MockLLMClient(LLMClient):
             return {"prose": "PRIVATE_VIEW_TEXT", "recap": "PRIVATE_VIEW_RECAP", "chapter_title": "Oma havainto", "choices": ["Tarkkaile"]}
         elif schema_name == "prose_turn":
             return {
-            "events": [{"description": "Eerik ja Mira kohtaavat raunioilla.", "witnesses": ["char_eerik", "char_mira"]}],
+            "events": [{"description": "Eerik ja Mira kohtaavat raunioilla.", "witnesses": ["char_eerik", "char_mira"], "derived_from": "consequence"}],
             "summary": "Eerik ja Mira ovat kohdanneet raunioilla.",
                 "prose": "Eerikin ääni rikkoi yön hiljaisuuden vaimeana kaikuna. Varjojen keskeltä erottui nopea liike, kun Mira astui esiin kivipaaden takaa tikari valmiina kädessään.",
                 "choices": [
@@ -338,7 +350,7 @@ class RecordingLLM(MockLLMClient):
         result = await super().json_completion(messages, role=role, **kwargs)
         if "prose" in result and kwargs.get("json_schema", {}).get("json_schema", {}).get("name") != "authored_reconciliation":
             if self.invalid:
-                result["events"] = [{"description": "Invalid witness", "witnesses": ["absent"]}]
+                result["events"] = [{"description": "Invalid witness", "witnesses": ["absent"], "derived_from": "consequence"}]
             result["character_state_updates"] = [{"character_id": "char_mira", "status": "unconscious"}]
         return result
 
@@ -428,7 +440,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
                 result = await super().json_completion(*args, **kwargs)
                 if "initial_characters" in result:
                     result["initial_characters"][0]["id"] = "char-eerik"
-                    result["initial_scene"]["events"] = [{"description": "A bell rings.", "witnesses": ["char-eerik"]}]
+                    result["initial_scene"]["events"] = [{"description": "A bell rings.", "witnesses": ["char-eerik"], "derived_from": "world"}]
                 return result
         from database import turn_store
         result = await StoryEngine(HyphenModel()).initialize_new_story(StoryInitRequest(title="Identifier test"))
@@ -519,7 +531,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(db.get_db_path("test").with_suffix(".pre-v5.db").exists())
         async with aiosqlite.connect(db.get_db_path("test")) as connection:
             async with connection.execute("PRAGMA user_version") as cursor:
-                self.assertEqual((await cursor.fetchone())[0], 5)
+                self.assertEqual((await cursor.fetchone())[0], 6)
             await connection.execute("SELECT * FROM turn_snapshots")
         self.assertEqual((await db.get_story_meta("test")).title, "Original")
 
@@ -558,7 +570,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         original = model.json_completion
         async def invalid_witness(*args, **kwargs):
             result = await original(*args, **kwargs)
-            result["events"] = [{"description": "A bell rings.", "witnesses": ["unknown"]}]
+            result["events"] = [{"description": "A bell rings.", "witnesses": ["unknown"], "derived_from": "consequence"}]
             return result
         model.json_completion = invalid_witness
         revision = await turn_store.get_revision(story_id)
@@ -597,7 +609,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         async def plan_changes(*args, **kwargs):
             result = await original(*args, **kwargs)
             if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
-                result["events"] = [{"description": "VISIBLE_POWER_FAILURE", "witnesses": ["char_eerik"]}]
+                result["events"] = [{"description": "VISIBLE_POWER_FAILURE", "witnesses": ["char_eerik"], "derived_from": "consequence"}]
                 result["character_state_updates"] = [{"character_id": "char_mira", "status": "dead"}]
                 result["decision_character_ids"] = ["char_eerik"]
                 result["requires_player_input"] = True
@@ -636,8 +648,8 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(latest["internal_monologue"], "PRIVATE_THOUGHT_2")
         self.assertEqual(latest["action_and_speech"], "ATTEMPT_2")
         planning = next(messages for role, messages in model.calls
-                        if role == "director" and "previous_private_intentions" in messages[1]["content"])
-        self.assertIn("PRIVATE_THOUGHT_1", planning[1]["content"])
+                        if role == "director" and "previous_intentions" in messages[1]["content"])
+        self.assertNotIn("PRIVATE_THOUGHT_1", planning[1]["content"])
         calls = [messages for role, messages in model.calls if role == "character"]
         self.assertIn("YOUR PREVIOUS PRIVATE THOUGHT AND ATTEMPT", str(calls))
         self.assertIn("PRIVATE_THOUGHT_1", str(calls))
@@ -694,8 +706,8 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "prose_turn":
                 result.update(chapter_title="Kohtaaminen", director_plan="EVOLVING_PLAN", director_notes="CURRENT_NOTES",
                               world_description="CHANGED_WORLD", character_state_updates=[])
-                result["events"] = [{"description": "VISIBLE_OUTCOME", "witnesses": ["char_eerik"]},
-                                    {"description": "SECRET_OFFSTAGE", "witnesses": []}]
+                result["events"] = [{"description": "VISIBLE_OUTCOME", "witnesses": ["char_eerik"], "derived_from": "consequence"},
+                                    {"description": "SECRET_OFFSTAGE", "witnesses": [], "derived_from": "world"}]
             return result
         model.json_completion = evolving_state
         await engine.advance_turn(sid, mode="simulation")
@@ -709,11 +721,11 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("char_mira", player_call[1]["content"])
         model.calls.clear()
         await engine.advance_turn(sid, mode="simulation")
-        planning = next(messages for role, messages in model.calls if "previous_private_intentions" in messages[1]["content"])
+        planning = next(messages for role, messages in model.calls if "previous_intentions" in messages[1]["content"])
         inputs = json.loads(planning[1]["content"])
-        self.assertEqual(inputs["plot_arc"], "EVOLVING_PLAN")
-        self.assertEqual(inputs["notes"], "CURRENT_NOTES")
-        self.assertEqual(inputs["world_lore"], "CHANGED_WORLD")
+        self.assertEqual(inputs["plot"], "EVOLVING_PLAN")
+        self.assertNotIn("notes", inputs)
+        self.assertEqual(inputs["world"], "CHANGED_WORLD")
         await turn_store.rollback_last_turn(sid, await turn_store.get_revision(sid))
         self.assertEqual(await turn_store.get_reading_metadata(sid), metadata)
 
@@ -747,7 +759,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         model.json_completion = select_former_player
         await engine.advance_turn(story_id, mode="novel")
         self.assertEqual(len([role for role, messages in model.calls if role == "character"]), 1)
-        planning = next(messages for role, messages in model.calls if role == "director" and "previous_private_intentions" in messages[1]["content"])
+        planning = next(messages for role, messages in model.calls if role == "director" and "previous_intentions" in messages[1]["content"])
         self.assertTrue(all(not character["is_player_controlled"] for character in json.loads(planning[1]["content"])["characters"]))
         synthesis = next(messages for role, messages in model.calls if role == "director" and "[CHARACTER DOSSIERS" in messages[1]["content"])
         self.assertIn("NEVER in prose", synthesis[0]["content"])
@@ -806,7 +818,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         character = Character(id="actor", name="Actor", age=30, status="unconscious")
         scene_id = await db.create_scene("test", Scene(location="Room", scene_goal="Test"))
         turn = SceneTurn(scene_id=scene_id, turn_index=1, director_prose="Prose")
-        outcome = ProseTurnResponse(prose="Prose", summary="Summary", events=[StoryEvent(description="A bell rings.", witnesses=["actor"])], active_character_ids=[])
+        outcome = ProseTurnResponse(prose="Prose", summary="Summary", events=[StoryEvent(description="A bell rings.", witnesses=["actor"], derived_from="world")], active_character_ids=[])
         response = TurnResponse(turn_index=1, director_prose="Prose", story_text_snippet="Prose", request_id="one")
         await turn_store.commit_turn("test", 0, turn, [character], outcome, response, "fingerprint", {})
         self.assertEqual((await db.get_character("test", "actor")).status, "unconscious")

@@ -33,8 +33,11 @@ class Settings:
     # Kertojan / Pääagentin hienosäädöt (Director & Novelist)
     DIRECTOR_MODEL: str = os.getenv("DIRECTOR_MODEL", "grok-4.6")
     DIRECTOR_MAX_TOKENS: int = int(os.getenv("DIRECTOR_MAX_TOKENS", "32000" if LLM_PROVIDER == "azure" else "3500"))
-    DIRECTOR_TEMPERATURE: float = float(os.getenv("DIRECTOR_TEMPERATURE", "0.85"))
-    DIRECTOR_REASONING_EFFORT: str = os.getenv("DIRECTOR_REASONING_EFFORT", "medium")
+    DIRECTOR_TEMPERATURE: float = float(os.getenv("DIRECTOR_TEMPERATURE", "0.45"))
+    DIRECTOR_REASONING_EFFORT: str = os.getenv("DIRECTOR_REASONING_EFFORT", "low")
+    PLAYER_VIEW_TEMPERATURE: float = float(os.getenv("PLAYER_VIEW_TEMPERATURE", "0.8"))
+    PLAYER_VIEW_MAX_TOKENS: int = int(os.getenv("PLAYER_VIEW_MAX_TOKENS", "3500"))
+    PLAYER_VIEW_REASONING_EFFORT: str = os.getenv("PLAYER_VIEW_REASONING_EFFORT", "low")
 
     # Hahmoagenttien hienosäädöt (Character Agents)
     CHARACTER_MODEL: str = os.getenv("CHARACTER_MODEL", "grok-4.3")

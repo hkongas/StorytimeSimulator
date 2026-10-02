@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Optional, AsyncIterator
 from config import settings
 from core.llm_client import LLMClient
 from core.types import StoryMeta, Character, Scene, SceneTurn, ChronicleEntry
-from core.schemas import StoryInitResponse, ProseTurnResponse, TurnPlanResponse, PlayerViewResponse, pydantic_to_json_schema
+from core.schemas import StoryInitResponse, StoryBibleResponse, ProseTurnResponse, TurnPlanResponse, PlayerViewResponse, pydantic_to_json_schema
 from core.prompt_loader import prompt_loader
 import database.db as db
 
@@ -66,6 +66,8 @@ PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative pr
 
         # 1. Tallennetaan StoryMeta tietokantaan
         data = StoryInitResponse.model_validate(data).model_dump()
+        if not 4 <= len(data["secret_truths"]) <= 8 or not 1 <= len(data["clocks"]) <= 3:
+            raise ValueError("Alustuksen on määritettävä 4–8 salaista totuutta ja 1–3 kelloa.")
         meta = StoryMeta(
             id=story_id,
             title=title,
@@ -77,10 +79,14 @@ PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative pr
             custom_tone_override=custom_tone_override or ""
         )
         await db.save_story_meta(story_id, meta)
+        await db.save_story_bible(story_id, data["secret_truths"], data["clocks"], data["offscreen_agents"])
 
         # 2. Tallennetaan hahmot
         characters = []
         char_ids = []
+        opening_location_id = await db.ensure_location(
+            story_id, data["initial_scene"]["location"], data["initial_scene"].get("scene_goal", "")
+        )
         for char_data in data.get("initial_characters", []):
             char_id = char_data.get("id") or char_data.get("name", "char").lower().replace(" ", "_")
             if len(char_id) > 80 or not all(character.isalnum() or character in "_-" for character in char_id):
@@ -98,13 +104,20 @@ PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative pr
                 gender=char_data.get("gender"),
                 appearance=char_data.get("appearance", ""),
                 personality=char_data.get("personality", ""),
+                speech_style=char_data.get("speech_style", ""),
+                values=char_data.get("values", ""),
+                current_goal=char_data.get("current_goal", ""),
+                fears=char_data.get("fears", ""),
+                skills=char_data.get("skills", ""),
+                limitations=char_data.get("limitations", ""),
                 is_player_controlled=is_player,
                 physical_state=char_data.get("physical_state", "Terve ja hyväkuntoinen"),
                 mental_state=char_data.get("mental_state", "Rauhallinen ja tarkkaavainen"),
                 secret_motive=char_data.get("secret_motive", ""),
                 public_bio=char_data.get("public_bio", ""),
                 tier=char_data.get("tier", "major"),
-                known_locations=char_data.get("known_locations", [])
+                known_locations=char_data.get("known_locations", []),
+                location_id=opening_location_id
             )
             await db.save_character(story_id, char)
             characters.append(char)
@@ -190,25 +203,70 @@ Deliver the sensory perception briefing directly for '{character.name}'.
         except Exception:
             return f"Olet tilassa {scene.location}. Havaitset ympärilläsi olevat hahmot ja tilanteen kehittyvän."
 
+    async def ensure_story_bible(self, story_id, scene, characters):
+        bible = await db.get_story_bible(story_id)
+        if bible["secret_truths"]:
+            return bible
+        meta = await db.get_story_meta(story_id)
+        system = prompt_loader.compose_system_prompt("director/story_bible", include_tone=False)
+        raw = await self.llm.json_completion(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps({
+                    "title": meta.title, "genre": meta.genre, "world": meta.world_lore,
+                    "plot": meta.director_plot_arc, "scene": scene.model_dump(),
+                    "characters": [{"id": c.id, "name": c.name, "motive": c.secret_motive} for c in characters]
+                }, ensure_ascii=False)}
+            ], role="director", story_id=story_id,
+            json_schema=pydantic_to_json_schema(StoryBibleResponse, "story_bible")
+        )
+        generated = StoryBibleResponse.model_validate(raw)
+        await db.save_story_bible(
+            story_id, [item.model_dump() for item in generated.secret_truths],
+            [item.model_dump() for item in generated.clocks],
+            [item.model_dump() for item in generated.offscreen_agents]
+        )
+        return await db.get_story_bible(story_id)
+
     async def plan_turn(self, story_id, scene, characters, runtime, mode, user_input, director_guidance, private_intention):
         from database import turn_store
         meta = await db.get_story_meta(story_id)
-        previous_intentions = {character.id: await turn_store.get_last_intention(story_id, character.id)
-                               for character in characters}
+        bible = await self.ensure_story_bible(story_id, scene, characters)
+        previous_intentions = {}
+        for character in characters:
+            prior = await turn_store.get_last_intention(story_id, character.id)
+            if prior:
+                previous_intentions[character.id] = {
+                    "action": prior.get("action") or prior.get("action_and_speech", ""),
+                    "goal": prior.get("goal", "")
+                }
         system = prompt_loader.compose_system_prompt("director/plan_turn", tone_profile=meta.tone_profile,
                                                      custom_tone_override=meta.custom_tone_override)
         system += "\n" + prompt_loader.get_raw_prompt(f"director/mode_{mode}.txt")
+        no_progress = int(runtime.get("no_progress_beats", 0))
+        if no_progress >= 2:
+            system += "\nFORCED ADVANCE: The last two beats made no objective change. This beat must reveal a truth, tick a clock, move an offscreen agent, or change a concrete world state."
         data = await self.llm.json_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps({
                 "mode": mode, "user_input": user_input, "world_intervention": director_guidance,
-                "player_private_intention": private_intention if mode == "roleplay" else None, "scene": scene.model_dump(),
-                "characters": [character.model_dump() | {"is_player_controlled": character.is_player_controlled if mode == "roleplay" else False}
+                "player_private_intention": private_intention if mode == "roleplay" else None,
+                "scene": scene.model_dump(),
+                "characters": [character.model_dump(exclude={"created_at", "known_locations", "tier", "group_size_hint", "represents_group",
+                                                               "secret_motive", "fears", "private_thought"})
+                               | {"is_player_controlled": character.is_player_controlled if mode == "roleplay" else False}
                                for character in characters],
-                "previous_private_intentions": previous_intentions,
-                "runtime": runtime, "world_lore": runtime.get("world_description") or meta.world_lore,
-                "plot_arc": runtime.get("director_plan") or meta.director_plot_arc,
-                "notes": runtime.get("director_notes") or meta.director_notes
+                "previous_intentions": previous_intentions,
+                "next_decision_candidates": runtime.get("decision_character_ids", []),
+                "story_summary": runtime.get("summary", ""),
+                "world": runtime.get("world_description") or meta.world_lore,
+                "plot": runtime.get("director_plan") or meta.director_plot_arc,
+                "truths": bible["secret_truths"],
+                "clocks": bible["clocks"],
+                "offscreen_agents": bible["offscreen_agents"],
+                "no_progress_beats": no_progress
             }, ensure_ascii=False)}], role="director", story_id=story_id,
+            temperature=settings.DIRECTOR_TEMPERATURE,
+            reasoning_effort=settings.DIRECTOR_REASONING_EFFORT,
             json_schema=pydantic_to_json_schema(TurnPlanResponse, "turn_plan")
         )
         return TurnPlanResponse.model_validate(data)
@@ -216,10 +274,13 @@ Deliver the sensory perception briefing directly for '{character.name}'.
     async def create_player_view(self, story_id, character, outcome, intention, runtime, location, tone_profile, custom_tone_override):
         from database import turn_store
         memories = await db.get_relevant_memories(story_id, character.id, location, limit=20)
-        previous_view = runtime.get("player_views", {}).get(character.id, {})
+        previous_view = await turn_store.get_latest_player_view(story_id, character.id)
+        previous_view = previous_view or runtime.get("player_views", {}).get(character.id, {})
         system = prompt_loader.compose_system_prompt("director/player_view", tone_profile=tone_profile,
                                                      custom_tone_override=custom_tone_override)
-        data = {"character": character.model_dump(), "location": location,
+        public_character = character.model_dump(exclude={"secret_motive", "values", "current_goal", "fears", "skills", "limitations",
+                                                          "created_at", "known_locations", "tier", "represents_group", "group_size_hint"})
+        data = {"character": public_character, "location": location,
                 "memories": [memory.content for memory in memories],
                 "previous_observation": await turn_store.get_observation(story_id, character.id),
                 "perceived_events": [event.description for event in outcome.events if character.id in event.witnesses],
@@ -227,7 +288,9 @@ Deliver the sensory perception briefing directly for '{character.name}'.
                 "previous_chapter_title": previous_view.get("chapter_title", "") if runtime.get("chapter_title") else ""}
         result = await self.llm.json_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps(data, ensure_ascii=False)}],
-            role="director", story_id=story_id, json_schema=pydantic_to_json_schema(PlayerViewResponse, "player_view"))
+            role="director", story_id=story_id, temperature=settings.PLAYER_VIEW_TEMPERATURE,
+            max_tokens=settings.PLAYER_VIEW_MAX_TOKENS, reasoning_effort=settings.PLAYER_VIEW_REASONING_EFFORT,
+            json_schema=pydantic_to_json_schema(PlayerViewResponse, "player_view"))
         view = PlayerViewResponse.model_validate(result).model_dump()
         if data["previous_chapter_title"]:
             view["chapter_title"] = data["previous_chapter_title"]

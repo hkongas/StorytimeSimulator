@@ -25,6 +25,86 @@ CREATE TABLE IF NOT EXISTS turn_snapshots (
     after_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS secret_truths (
+    id TEXT PRIMARY KEY,
+    fact TEXT NOT NULL,
+    discoverable_via TEXT NOT NULL DEFAULT '',
+    reveal_state TEXT NOT NULL DEFAULT 'hidden' CHECK (reveal_state IN ('hidden', 'hinted', 'revealed')),
+    revealed_at_turn INTEGER,
+    related_location_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS clocks (
+    id TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    remaining_beats INTEGER NOT NULL CHECK (remaining_beats >= 0),
+    on_expire_effect TEXT NOT NULL DEFAULT '',
+    visible BOOLEAN NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS offscreen_agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    progress TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    next_move TEXT NOT NULL DEFAULT '',
+    visible_to TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS locations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    connections TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    holder_character_id TEXT,
+    location_id TEXT,
+    state TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS relationships (
+    character_a TEXT NOT NULL,
+    character_b TEXT NOT NULL,
+    attitude TEXT NOT NULL DEFAULT '',
+    trust REAL NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (character_a, character_b)
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    turn_id INTEGER,
+    description TEXT NOT NULL,
+    derived_from TEXT NOT NULL,
+    actor_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS event_witnesses (
+    event_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    modality TEXT NOT NULL DEFAULT 'saw',
+    perceived_text TEXT,
+    PRIMARY KEY (event_id, character_id),
+    FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS player_view_artifacts (
+    turn_id INTEGER NOT NULL,
+    character_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'view_pending',
+    view_json TEXT,
+    error_message TEXT NOT NULL DEFAULT '',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (turn_id, character_id)
+);
+
 CREATE TABLE IF NOT EXISTS prose_edits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     turn_id INTEGER NOT NULL,
@@ -71,6 +151,12 @@ CREATE TABLE IF NOT EXISTS characters (
     gender TEXT,
     appearance TEXT DEFAULT '',
     personality TEXT DEFAULT '',
+    speech_style TEXT DEFAULT '',
+    character_values TEXT DEFAULT '',
+    current_goal TEXT DEFAULT '',
+    fears TEXT DEFAULT '',
+    skills TEXT DEFAULT '',
+    limitations TEXT DEFAULT '',
     is_player_controlled BOOLEAN DEFAULT 0,
     physical_state TEXT DEFAULT 'Terve ja hyväkuntoinen',
     mental_state TEXT DEFAULT 'Rauhallinen ja tarkkaavainen',
@@ -82,6 +168,7 @@ CREATE TABLE IF NOT EXISTS characters (
     last_active_turn INTEGER,
     represents_group TEXT,
     group_size_hint INTEGER,
+    location_id TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -93,6 +180,9 @@ CREATE TABLE IF NOT EXISTS character_memories (
     memory_type TEXT DEFAULT 'observation',
     content TEXT NOT NULL,
     importance_score REAL DEFAULT 1.0,
+    source_event_id TEXT,
+    last_accessed DATETIME,
+    created_at_turn INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
 );
@@ -142,4 +232,3 @@ CREATE TABLE IF NOT EXISTS api_calls (
     error_message TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-
