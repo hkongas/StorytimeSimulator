@@ -58,6 +58,8 @@ PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative pr
         data = await self.llm.json_completion(
             messages=messages,
             role="director",
+            temperature=settings.STORY_INIT_TEMPERATURE,
+            reasoning_effort=settings.STORY_INIT_REASONING_EFFORT,
             max_tokens=init_max_tokens,
             timeout=240.0,
             json_schema=init_schema,
@@ -122,6 +124,27 @@ PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative pr
             await db.save_character(story_id, char)
             characters.append(char)
             char_ids.append(char.id)
+
+        relationships = data.get("initial_relationships", [])
+        if any(relation.character_a not in char_ids or relation.character_b not in char_ids
+               or relation.character_a == relation.character_b for relation in relationships):
+            raise ValueError("Alustuksen suhde viittaa virheelliseen hahmoon.")
+        await db.save_relationships(story_id, [relation.model_dump() for relation in relationships])
+        items = [item.model_dump() for item in data.get("initial_items", [])]
+        seen_item_ids = set()
+        for item in items:
+            if not item["id"] or len(item["id"]) > 80 or not all(char.isalnum() or char in "_-" for char in item["id"]):
+                raise ValueError("Alustuksessa syntyi virheellinen esinetunniste.")
+            if item["id"] in seen_item_ids or (item.get("holder_character_id") and item["holder_character_id"] not in char_ids):
+                raise ValueError("Alustuksen esine viittaa virheelliseen tunnisteeseen.")
+            if item.get("holder_character_id") and item.get("location_id"):
+                raise ValueError("Esineellä voi olla joko hahmo tai sijainti, ei molempia.")
+            if item.get("location_id") and item["location_id"] != opening_location_id:
+                raise ValueError("Aloitusväline viittaa tuntemattomaan paikkaan.")
+            seen_item_ids.add(item["id"])
+            if not item.get("holder_character_id") and not item.get("location_id"):
+                item["location_id"] = opening_location_id
+        await db.save_items(story_id, items)
 
         # 3. Luodaan aloituskohtaus
         init_scene = data.get("initial_scene", {})
@@ -250,7 +273,7 @@ Deliver the sensory perception briefing directly for '{character.name}'.
             messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps({
                 "mode": mode, "user_input": user_input, "world_intervention": director_guidance,
                 "player_private_intention": private_intention if mode == "roleplay" else None,
-                "scene": scene.model_dump(),
+                "scene": scene.model_dump(exclude={"created_at"}),
                 "characters": [character.model_dump(exclude={"created_at", "known_locations", "tier", "group_size_hint", "represents_group",
                                                                "secret_motive", "fears", "private_thought"})
                                | {"is_player_controlled": character.is_player_controlled if mode == "roleplay" else False}
@@ -265,26 +288,33 @@ Deliver the sensory perception briefing directly for '{character.name}'.
                 "offscreen_agents": bible["offscreen_agents"],
                 "no_progress_beats": no_progress
             }, ensure_ascii=False)}], role="director", story_id=story_id,
-            temperature=settings.DIRECTOR_TEMPERATURE,
-            reasoning_effort=settings.DIRECTOR_REASONING_EFFORT,
+            temperature=settings.DIRECTOR_PLAN_TEMPERATURE,
+            max_tokens=settings.DIRECTOR_PLAN_MAX_TOKENS,
+            reasoning_effort=settings.DIRECTOR_PLAN_REASONING_EFFORT,
             json_schema=pydantic_to_json_schema(TurnPlanResponse, "turn_plan")
         )
         return TurnPlanResponse.model_validate(data)
 
-    async def create_player_view(self, story_id, character, outcome, intention, runtime, location, tone_profile, custom_tone_override):
+    async def create_player_view(self, story_id, character, outcome, intention, runtime, location, tone_profile,
+                                 custom_tone_override, before_turn_id=None):
         from database import turn_store
         memories = await db.get_relevant_memories(story_id, character.id, location, limit=20)
-        previous_view = await turn_store.get_latest_player_view(story_id, character.id)
+        previous_view = await turn_store.get_latest_player_view(story_id, character.id, before_turn_id)
         previous_view = previous_view or runtime.get("player_views", {}).get(character.id, {})
         system = prompt_loader.compose_system_prompt("director/player_view", tone_profile=tone_profile,
                                                      custom_tone_override=custom_tone_override)
         public_character = character.model_dump(exclude={"secret_motive", "values", "current_goal", "fears", "skills", "limitations",
                                                           "created_at", "known_locations", "tier", "represents_group", "group_size_hint"})
+        perceived_events = []
+        for event in outcome.events:
+            if character.id in event.witnesses:
+                detail = next((item for item in event.witness_details if item.character_id == character.id), None)
+                perceived_events.append((detail.perceived_text or detail.detail or event.description) if detail else event.description)
         data = {"character": public_character, "location": location,
                 "memories": [memory.content for memory in memories],
                 "previous_observation": await turn_store.get_observation(story_id, character.id),
-                "perceived_events": [event.description for event in outcome.events if character.id in event.witnesses],
-                "own_intention": intention, "previous_recap": previous_view.get("recap", ""),
+                "perceived_events": perceived_events,
+                "own_intention": intention,
                 "previous_chapter_title": previous_view.get("chapter_title", "") if runtime.get("chapter_title") else ""}
         result = await self.llm.json_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps(data, ensure_ascii=False)}],
@@ -292,6 +322,16 @@ Deliver the sensory perception briefing directly for '{character.name}'.
             max_tokens=settings.PLAYER_VIEW_MAX_TOKENS, reasoning_effort=settings.PLAYER_VIEW_REASONING_EFFORT,
             json_schema=pydantic_to_json_schema(PlayerViewResponse, "player_view"))
         view = PlayerViewResponse.model_validate(result).model_dump()
+        delta = view["recap_delta"] or view["recap"]
+        combined = "\n".join(part for part in (previous_view.get("recap", "").strip(), delta.strip()) if part)
+        if len(combined) > 4000:
+            recent = combined[-3000:]
+            older = combined[:-3000][-997:]
+            if " " in older:
+                older = older[older.find(" ") + 1:]
+            combined = f"{older}\n…\n{recent}" if older else recent
+        view["recap_delta"] = delta
+        view["recap"] = combined[:4000]
         if data["previous_chapter_title"]:
             view["chapter_title"] = data["previous_chapter_title"]
         return view
@@ -413,7 +453,9 @@ Reader wish: {reader_wish or 'none'}
             messages[0]["content"] += " All characters are AI-controlled in this mode. Never wait for user input to supply a formerly player-controlled character's response."
         messages[0]["content"] += " The prose field is the narrator's omniscient reading version in ALL modes, including roleplay; a separate knowledge-limited player version is generated from witnessed events only. Integrate supplied private thoughts selectively to convey emotion and motivation. Return chapter_title, director_plan, director_notes and world_description updated from actual outcomes. Plans are revisable possibilities, never accomplished facts. Keep this chapter's title stable until chapter_end."
         data = await self.llm.json_completion(
-            messages=messages, role="director", json_schema=prose_schema, story_id=story_id
+            messages=messages, role="director", json_schema=prose_schema, story_id=story_id,
+            temperature=settings.PROSE_TEMPERATURE, max_tokens=settings.PROSE_MAX_TOKENS,
+            reasoning_effort=settings.PROSE_REASONING_EFFORT
         )
         return ProseTurnResponse.model_validate(data).model_dump()
 

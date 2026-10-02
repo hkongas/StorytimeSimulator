@@ -299,7 +299,26 @@ function renderStoryView(data, preserveReadingPosition = false) {
         stream.appendChild(marker);
         lastViewpoint = viewpoint;
       }
-      appendTurnToView(limited ? {...turn, id: null, director_prose: playerView?.prose || 'Tälle vuorolle ei ole tallennettu tämän hahmon rajattua näkökulmaa.'} : turn, false);
+      const viewStatus = metadata.player_view_status?.[selectedPlayer?.id];
+      appendTurnToView(limited ? {...turn, id: null, director_prose: playerView?.prose ||
+        (viewStatus === 'view_pending' ? 'Hahmon näkökulmaa muodostetaan…' : 'Tälle vuorolle ei ole tallennettu tämän hahmon rajattua näkökulmaa.')} : turn, false);
+      if (limited && !playerView && viewStatus === 'view_failed' && selectedPlayer) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = 'Yritä muodostaa näkökulma uudelleen';
+        retry.addEventListener('click', async () => {
+          retry.disabled = true;
+          try {
+            const result = await fetch(`/api/stories/${currentStoryId}/turns/${turn.id}/player-view/retry?character_id=${encodeURIComponent(selectedPlayer.id)}`, {method: 'POST'});
+            if (!result.ok) throw new Error((await result.json()).detail || 'Näkökulman uusinta epäonnistui.');
+            await loadStory(currentStoryId);
+          } catch (error) {
+            retry.disabled = false;
+            alert(error.message);
+          }
+        });
+        stream.appendChild(retry);
+      }
       if (document.getElementById('showRecaps').checked) {
         const recap = limited ? playerView?.recap : metadata.recap;
         if (recap) {

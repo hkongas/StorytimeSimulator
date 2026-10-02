@@ -75,6 +75,9 @@ class CharacterAgent:
 
         profile = self.character.model_dump(exclude={"created_at", "tier", "known_locations", "represents_group", "group_size_hint"})
         user_content = "[YOUR PRIVATE CHARACTER PROFILE]\n" + json.dumps(profile, ensure_ascii=False)
+        relationships = await db.get_character_relationships(story_id, self.character.id)
+        if relationships:
+            user_content += "\n[RELATIONSHIPS YOU KNOW]\n" + json.dumps(relationships, ensure_ascii=False)
         user_content += "\n[YOUR RECALLED MEMORIES]\n" + memory_text
         user_content += f"""
 [CURRENT LOCATION]
@@ -109,6 +112,12 @@ class CharacterAgent:
         if decision["action"]:
             speech = f' "{decision["speech"]}"' if decision["speech"] else ""
             decision["action_and_speech"] = decision["action"] + speech
+        decision["context_manifest"] = {
+            "event_ids": await db.get_witnessed_event_ids(story_id, self.character.id),
+            "fact_ids": [],
+            "memory_ids": [memory.id for memory in past_memories if memory.id is not None],
+            "truth_ids": []
+        }
         return decision
 
     # Säilytetään vanha nimi aliasmäppäyksenä yhteensopivuuden vuoksi

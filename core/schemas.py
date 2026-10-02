@@ -29,6 +29,14 @@ class OffscreenAgent(BaseModel):
     visible_to: List[str] = Field(default_factory=list)
 
 
+class RelationshipSeed(BaseModel):
+    character_a: str
+    character_b: str
+    attitude: str = ""
+    trust: float = Field(default=0, ge=-1, le=1)
+    summary: str = ""
+
+
 class StoryBibleResponse(BaseModel):
     secret_truths: List[SecretTruth] = Field(min_length=4, max_length=8)
     clocks: List[StoryClock] = Field(min_length=1, max_length=3)
@@ -72,10 +80,27 @@ class StoryInitCharacter(BaseModel):
     tier: str = Field(default="major", description="major, supporting, or minor")
     known_locations: List[str] = Field(default_factory=list, description="Locations known by this character")
 
+
+class StoryInitItem(BaseModel):
+    id: str
+    name: str
+    holder_character_id: Optional[str] = None
+    location_id: Optional[str] = None
+    state: str = ""
+
+
+class StoryWitness(BaseModel):
+    character_id: str
+    detail: str = ""
+    modality: Literal["saw", "heard", "faintly_heard"] = "saw"
+    perceived_text: Optional[str] = None
+
+
 class StoryEvent(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     description: str = Field(min_length=1, max_length=2000, description="Observable event only, no hidden thoughts or narrator-only facts")
     witnesses: List[str] = Field(description="IDs of characters who actually perceived the event; empty for a secret world event")
+    witness_details: List[StoryWitness] = Field(default_factory=list)
     derived_from: str = Field(description="intent:<character_id>, consequence, routine, or world")
     actor_id: Optional[str] = None
 
@@ -104,6 +129,8 @@ class StoryInitResponse(BaseModel):
     secret_truths: List[SecretTruth] = Field(default_factory=list, max_length=8)
     clocks: List[StoryClock] = Field(default_factory=list, max_length=3)
     offscreen_agents: List[OffscreenAgent] = Field(default_factory=list, max_length=2)
+    initial_relationships: List[RelationshipSeed] = Field(default_factory=list, max_length=12)
+    initial_items: List[StoryInitItem] = Field(default_factory=list, max_length=30)
 
 class CharacterStateUpdate(BaseModel):
     character_id: str = Field(description="The unique id of the character")
@@ -161,16 +188,16 @@ class TurnPlanResponse(BaseModel):
 
 
 class CharacterDecisionResponse(BaseModel):
-    goal: str = Field(default="", description="The character's current goal")
-    time_horizon: str = Field(default="muutama sekunti")
-    action: str = Field(default="", description="One consequential goal-level action the character intends")
-    speech: str = Field(default="")
+    goal: str = Field(description="The character's current goal")
+    time_horizon: str = Field(description="How long this goal-level action should take")
+    action: str = Field(description="One consequential goal-level action the character intends")
+    speech: str
     target: Optional[str] = None
     volume: Literal["whisper", "normal", "shout"] = "normal"
-    if_interrupted: str = Field(default="")
-    private_thought: str = Field(default="")
+    if_interrupted: str
+    private_thought: str
     memory: Optional[str] = None
-    importance: int = Field(default=5, ge=1, le=10)
+    importance: int = Field(ge=1, le=10)
     belief_updates: List[str] = Field(default_factory=list)
     goal_update: Optional[str] = None
     internal_monologue: str = Field(default="", description="Private thoughts, emotions and motivations of the character")
@@ -178,7 +205,8 @@ class CharacterDecisionResponse(BaseModel):
 
 class PlayerViewResponse(BaseModel):
     prose: str = Field(min_length=1, max_length=12000, description="Limited viewpoint story prose using only supplied private knowledge and perceived events")
-    recap: str = Field(min_length=1, description="Cumulative recap limited to this character's knowledge; preserve uncertainty")
+    recap: str = Field(default="", description="Compatibility cumulative recap")
+    recap_delta: str = Field(default="", max_length=1200, description="One to four new viewpoint-limited sentences")
     chapter_title: str = Field(min_length=1, max_length=160, description="Chapter title that reveals no unknown secret")
     choices: List[str] = Field(default_factory=list, max_length=5, description="Possible actions based only on what this character knows; never in prose")
 
@@ -187,6 +215,13 @@ class PlayerViewResponse(BaseModel):
     def bound_recap(cls, value):
         if isinstance(value, str) and len(value) > 4000:
             return value[:3997].rsplit(" ", 1)[0] + "..."
+        return value
+
+    @field_validator("recap_delta", mode="before")
+    @classmethod
+    def bound_recap_delta(cls, value):
+        if isinstance(value, str) and len(value) > 1200:
+            return value[:1197].rsplit(" ", 1)[0] + "..."
         return value
 
 def pydantic_to_json_schema(model: Type[BaseModel], name: Optional[str] = None, strict: bool = False) -> Dict[str, Any]:

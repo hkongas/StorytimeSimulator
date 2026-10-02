@@ -7,6 +7,8 @@ CRITICAL DIRECTIVES:
 3. Initial Characters: Create 2-3 complex, distinct characters with independent agency, secret motives, vulnerabilities, and detailed physical profiles. Give them different, potentially conflicting goals, values, fears, skills, and limitations.
 4. Opening Scene: Craft a gripping, atmospheric opening scene that immediately places the reader into an active situation with palpable tension.
 5. Secret Story Bible: Define 4-8 objectively true, discoverable facts that explain the world's mysteries. Give each fact a discovery path. Add 1-3 clocks with visible consequences on expiry and at most two offscreen agents with independent goals. Secrets are for the Director and Resolver only.
+6. Relationships: Describe asymmetric attitudes, trust and shared history between characters. Do not make the cast agree by default.
+7. Important opening items: Give any consequential object a unique ID and explicit holder or opening-location ownership; omit objects that do not matter.
 
 RESPONSE SPECIFICATION:
 Return strictly valid JSON with the following schema:

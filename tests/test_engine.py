@@ -98,6 +98,13 @@ class MockLLMClient(LLMClient):
             }
         elif role == "character":
             return {
+                "goal": "Selvitä, kuka liikkuu raunioilla",
+                "time_horizon": "muutama sekunti",
+                "action": "Eerik astuu esiin",
+                "speech": "Kuka siellä on?",
+                "if_interrupted": "Vetäydyn suojaan",
+                "private_thought": "Mietin, kuka toinen liikkuu raunioilla näin myöhään...",
+                "importance": 6,
                 "internal_monologue": "Mietin, kuka toinen liikkuu raunioilla näin myöhään...",
                 "action_and_speech": "Eerik astuu esiin ja kuiskaa: 'Kuka siellä on?'",
                 "updated_physical_state": "Valppaana, lihakset jännittyneinä",
@@ -384,6 +391,20 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(logs[0]["cached_tokens"], 50)
         self.assertTrue(logs[0]["cost_known"])
 
+    async def test_prompt_logging_is_opt_in_and_compressed(self):
+        import base64
+        import gzip
+        import json
+        from unittest.mock import patch
+        with patch.object(settings, "LLM_CALL_CONTENT_LOGGING", True):
+            await db.log_api_call("test", "character", "test-model", 0.1,
+                                  prompt_data={"messages": [{"content": "private prompt"}]},
+                                  response_data={"action": "test"})
+        record = (await db.get_api_calls_for_story("test"))[0]
+        self.assertEqual(json.loads(gzip.decompress(base64.b64decode(record["prompt_payload"][5:])))["messages"][0]["content"],
+                         "private prompt")
+        self.assertIsNotNone(record["turn_index"])
+
     async def test_incomplete_schema_is_rejected_before_database_creation(self):
         from unittest.mock import patch, mock_open
         with patch("database.db.open", mock_open(read_data="CREATE TABLE story_meta (id TEXT);")):
@@ -400,7 +421,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         await db.init_story_db("test")
         scene_id = await db.create_scene("test", Scene(location="Room", scene_goal="Test"))
         self.assertIsNotNone(scene_id)
-        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v5.db").exists())
+        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v9.db").exists())
         self.assertEqual((await db.get_story_meta("test")).title, "Original")
 
     async def test_current_version_repairs_missing_log_columns(self):
@@ -413,7 +434,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             await connection.commit()
         await db.log_api_call("test", "director", "azure-test", 0.2,
                               cached_tokens=10, cost_known=False)
-        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v5.db").exists())
+        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v9.db").exists())
         logs = await db.get_api_calls_for_story("test")
         self.assertEqual(len(logs), 2)
         self.assertEqual(logs[0]["cached_tokens"], 10)
@@ -452,6 +473,104 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         result = await engine.initialize_new_story(StoryInitRequest(title="Test"))
         model.calls.clear()
         return model, engine, result["story_id"]
+
+    async def test_secret_bible_and_clock_progression(self):
+        import aiosqlite
+        model, engine, story_id = await self.create_recorded_story()
+        bible = await db.get_story_bible(story_id)
+        self.assertEqual(len(bible["secret_truths"]), 4)
+        self.assertEqual(len(bible["clocks"]), 1)
+        async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+            await connection.execute("UPDATE clocks SET remaining_beats = 3 WHERE id = 'clock_patrol'")
+            await connection.commit()
+        await engine.advance_turn(story_id, mode="simulation")
+        await engine.advance_turn(story_id, mode="simulation")
+        runtime = await __import__("database.turn_store", fromlist=["get_runtime"]).get_runtime(story_id)
+        self.assertEqual(runtime["no_progress_beats"], 2)
+        await engine.advance_turn(story_id, mode="simulation")
+        bible = await db.get_story_bible(story_id)
+        self.assertEqual(bible["clocks"][0]["remaining_beats"], 0)
+        runtime = await __import__("database.turn_store", fromlist=["get_runtime"]).get_runtime(story_id)
+        self.assertEqual(runtime["no_progress_beats"], 0)
+        async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+            async with connection.execute("SELECT description FROM events WHERE description = 'Vartijat saapuvat raunioille.'") as cursor:
+                self.assertIsNotNone(await cursor.fetchone())
+
+    async def test_player_view_failure_does_not_rollback_turn_and_can_retry(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        await db.set_player_character(story_id, "char_eerik")
+        original = model.json_completion
+        fail = True
+
+        async def flaky(*args, **kwargs):
+            nonlocal fail
+            schema_name = kwargs.get("json_schema", {}).get("json_schema", {}).get("name")
+            if schema_name == "player_view" and fail:
+                raise RuntimeError("view unavailable")
+            return await original(*args, **kwargs)
+
+        model.json_completion = flaky
+        response = await engine.advance_turn(story_id, mode="roleplay", user_input="Tarkkailen")
+        self.assertEqual(response.player_view_status, "view_failed")
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 2)
+        metadata = await turn_store.get_reading_metadata(story_id)
+        latest_turn_id = str(max(int(turn_id) for turn_id in metadata))
+        self.assertEqual(metadata[latest_turn_id]["player_view_status"]["char_eerik"], "view_failed")
+        fail = False
+        await engine.retry_player_view(story_id, int(latest_turn_id), "char_eerik")
+        metadata = await turn_store.get_reading_metadata(story_id)
+        self.assertIn("char_eerik", metadata[latest_turn_id]["player_views"])
+
+    async def test_player_view_prompt_excludes_truths_and_other_private_thoughts(self):
+        model, engine, story_id = await self.create_recorded_story()
+        await db.set_player_character(story_id, "char_eerik")
+        secrets = [truth["fact"] for truth in (await db.get_story_bible(story_id))["secret_truths"]]
+        await engine.advance_turn(story_id, mode="roleplay", user_input="Odotan")
+        player_messages = next(messages for role, messages in model.calls if '"perceived_events"' in messages[1]["content"])
+        serialized = str(player_messages)
+        self.assertTrue(all(secret not in serialized for secret in secrets))
+        self.assertNotIn("Mietin, kuka toinen liikkuu", serialized)
+
+    async def test_player_recap_is_bounded(self):
+        from core.schemas import PlayerViewResponse
+        result = PlayerViewResponse(prose="Näkökulma", recap="x" * 5000, chapter_title="Luku")
+        self.assertLessEqual(len(result.recap), 4000)
+
+    async def test_state_change_rejects_unknown_item(self):
+        model, engine, story_id = await self.create_recorded_story()
+        original = model.json_completion
+
+        async def invalid_change(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
+                result["state_changes"] = [{"entity": "item", "entity_id": "missing", "field": "state", "value": "taken"}]
+            return result
+
+        model.json_completion = invalid_change
+        with self.assertRaisesRegex(ValueError, "tuntemattomaan esineeseen"):
+            await engine.advance_turn(story_id, mode="simulation")
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 1)
+
+    async def test_unintended_voluntary_event_is_removed(self):
+        import aiosqlite
+        model, engine, story_id = await self.create_recorded_story()
+        original = model.json_completion
+
+        async def invented_action(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "prose_turn":
+                result["events"] = [{
+                    "description": "Mira nousi ja seurasi Eerikiä.", "witnesses": ["char_mira"],
+                    "derived_from": "consequence", "actor_id": "char_mira"
+                }]
+            return result
+
+        model.json_completion = invented_action
+        await engine.advance_turn(story_id, mode="simulation")
+        async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+            async with connection.execute("SELECT 1 FROM events WHERE description LIKE 'Mira nousi%'") as cursor:
+                self.assertIsNone(await cursor.fetchone())
 
     async def test_roleplay_opening_has_private_reading_view(self):
         from database import turn_store
@@ -531,7 +650,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(db.get_db_path("test").with_suffix(".pre-v5.db").exists())
         async with aiosqlite.connect(db.get_db_path("test")) as connection:
             async with connection.execute("PRAGMA user_version") as cursor:
-                self.assertEqual((await cursor.fetchone())[0], 6)
+                self.assertEqual((await cursor.fetchone())[0], 8)
             await connection.execute("SELECT * FROM turn_snapshots")
         self.assertEqual((await db.get_story_meta("test")).title, "Original")
 
@@ -635,6 +754,9 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             if kwargs.get("role") == "character":
                 result["internal_monologue"] = f"PRIVATE_THOUGHT_{generation}"
                 result["action_and_speech"] = f"ATTEMPT_{generation}"
+                result["private_thought"] = f"PRIVATE_THOUGHT_{generation}"
+                result["action"] = f"ATTEMPT_{generation}"
+                result["speech"] = ""
             return result
         model.json_completion = changing_intention
         await engine.advance_turn(sid, mode="simulation")

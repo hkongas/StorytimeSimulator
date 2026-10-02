@@ -5,6 +5,15 @@ CREATE TABLE IF NOT EXISTS story_revision (
 );
 INSERT OR IGNORE INTO story_revision (id, revision) VALUES (1, 0);
 
+CREATE TABLE IF NOT EXISTS story_branches (
+    branch_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    parent_branch_id TEXT,
+    fork_turn_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO story_branches (branch_id, name) VALUES ('main', 'Main');
+
 CREATE TABLE IF NOT EXISTS story_runtime (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     state_json TEXT NOT NULL
@@ -22,7 +31,8 @@ CREATE TABLE IF NOT EXISTS turn_snapshots (
     turn_id INTEGER PRIMARY KEY,
     request_id TEXT NOT NULL,
     before_json TEXT NOT NULL,
-    after_json TEXT NOT NULL
+    after_json TEXT NOT NULL,
+    branch_id TEXT NOT NULL DEFAULT 'main'
 );
 
 CREATE TABLE IF NOT EXISTS secret_truths (
@@ -64,7 +74,8 @@ CREATE TABLE IF NOT EXISTS items (
     name TEXT NOT NULL,
     holder_character_id TEXT,
     location_id TEXT,
-    state TEXT NOT NULL DEFAULT ''
+    state TEXT NOT NULL DEFAULT '',
+    CHECK (holder_character_id IS NULL OR location_id IS NULL)
 );
 
 CREATE TABLE IF NOT EXISTS relationships (
@@ -82,6 +93,7 @@ CREATE TABLE IF NOT EXISTS events (
     description TEXT NOT NULL,
     derived_from TEXT NOT NULL,
     actor_id TEXT,
+    branch_id TEXT NOT NULL DEFAULT 'main',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -210,6 +222,7 @@ CREATE TABLE IF NOT EXISTS scene_turns (
     director_prose TEXT NOT NULL,
     choices TEXT DEFAULT '[]',
     image_prompt TEXT DEFAULT '',
+    branch_id TEXT NOT NULL DEFAULT 'main',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(scene_id) REFERENCES scenes(id) ON DELETE CASCADE
 );
@@ -228,6 +241,9 @@ CREATE TABLE IF NOT EXISTS api_calls (
     cost_usd REAL DEFAULT 0.0,
     cached_tokens INTEGER DEFAULT 0,
     cost_known BOOLEAN DEFAULT 0,
+    prompt_payload TEXT,
+    response_payload TEXT,
+    turn_index INTEGER,
     status TEXT DEFAULT 'success',
     error_message TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP

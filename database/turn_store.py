@@ -74,9 +74,12 @@ async def verify_committed_turn(story_id: str, response: TurnResponse):
         raise TurnConflictError("Tallennettu vuorokuitti ei vastaa valmistunutta vastausta.")
 
 
-async def _capture_state(connection) -> dict:
+async def _capture_state(connection, tables=None) -> dict:
     state = {}
-    for table in STATE_TABLES:
+    selected_tables = tuple(tables or STATE_TABLES)
+    if not set(selected_tables) <= set(STATE_TABLES):
+        raise ValueError("Palautuspiste sisältää tuntemattoman tilataulun.")
+    for table in selected_tables:
         async with connection.execute(f"SELECT * FROM {table} ORDER BY rowid") as cursor:
             columns = [column[0] for column in cursor.description]
             state[table] = [dict(zip(columns, row)) for row in await cursor.fetchall()]
@@ -106,15 +109,41 @@ async def get_observation(story_id: str, character_id: str) -> str:
     return row[0] if row else "Ei uusia varmennettuja havaintoja. Tukeudu omiin muistoihisi ja tietoihisi."
 
 
-async def get_latest_player_view(story_id: str, character_id: str) -> dict:
+async def get_latest_player_view(story_id: str, character_id: str, before_turn_id: int | None = None) -> dict:
+    await db.init_story_db(story_id)
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        query = "SELECT view_json FROM player_view_artifacts WHERE character_id = ? AND status = 'view_ready'"
+        params = [character_id]
+        if before_turn_id is not None:
+            query += " AND turn_id < ?"
+            params.append(before_turn_id)
+        query += " ORDER BY turn_id DESC LIMIT 1"
+        async with connection.execute(query, params) as cursor:
+            row = await cursor.fetchone()
+    return json.loads(row[0]) if row and row[0] else {}
+
+
+async def get_player_view_retry_context(story_id: str, turn_id: int, character_id: str) -> dict:
     await db.init_story_db(story_id)
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
         async with connection.execute(
-            "SELECT view_json FROM player_view_artifacts WHERE character_id = ? AND status = 'view_ready' ORDER BY turn_id DESC LIMIT 1",
-            (character_id,)
+            """SELECT p.status, r.payload_json, s.request_id, sc.location
+               FROM player_view_artifacts p
+               JOIN turn_snapshots s ON s.turn_id = p.turn_id
+               JOIN turn_receipts r ON r.request_id = s.request_id
+               JOIN scene_turns t ON t.id = p.turn_id
+               JOIN scenes sc ON sc.id = t.scene_id
+               WHERE p.turn_id = ? AND p.character_id = ?""",
+            (turn_id, character_id)
         ) as cursor:
             row = await cursor.fetchone()
-    return json.loads(row[0]) if row and row[0] else {}
+    if not row:
+        raise ValueError("Tälle vuorolle ei ole rajattua näkökulmaa.")
+    if row[0] not in {"view_failed", "view_pending"}:
+        raise ValueError("Näkökulma on jo valmis.")
+    payload = json.loads(row[1])
+    return {"status": row[0], "request_id": row[2], "location": row[3],
+            "outcome": payload["outcome"], "audit": payload.get("audit", {})}
 
 
 async def get_last_intention(story_id: str, character_id: str) -> dict:
@@ -145,7 +174,7 @@ async def get_reading_metadata(story_id: str) -> dict:
     await db.init_story_db(story_id)
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
         async with connection.execute(
-            "SELECT s.turn_id, t.scene_id, r.payload_json FROM turn_snapshots s JOIN scene_turns t ON t.id = s.turn_id JOIN turn_receipts r ON r.request_id = s.request_id ORDER BY s.turn_id"
+            "SELECT s.turn_id, t.scene_id, r.payload_json FROM turn_snapshots s JOIN scene_turns t ON t.id = s.turn_id JOIN turn_receipts r ON r.request_id = s.request_id WHERE s.branch_id = 'main' ORDER BY s.turn_id"
         ) as cursor:
             rows = await cursor.fetchall()
     result = (await get_runtime(story_id)).get("initial_reading", {}).copy()
@@ -204,10 +233,13 @@ async def save_initial_events(story_id: str, turn_id: int, events: list):
                 "INSERT OR IGNORE INTO events (id, turn_id, description, derived_from, actor_id) VALUES (?, ?, ?, ?, ?)",
                 (event.id, turn_id, event.description, event.derived_from, event.actor_id)
             )
+            details = {detail.character_id: detail for detail in event.witness_details}
             for witness in event.witnesses:
+                detail = details.get(witness)
                 await connection.execute(
                     "INSERT OR IGNORE INTO event_witnesses (event_id, character_id, detail, modality, perceived_text) VALUES (?, ?, ?, ?, ?)",
-                    (event.id, witness, event.description, "saw", None)
+                    (event.id, witness, (detail.detail or event.description) if detail else event.description,
+                     detail.modality if detail else "saw", detail.perceived_text if detail else None)
                 )
         await connection.commit()
 
@@ -256,6 +288,11 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                 "outcome": outcome.model_dump(mode="json"), "response": response.model_dump(mode="json"),
                 "fingerprint": fingerprint, "audit": audit
             })
+            if outcome.scene_location:
+                await connection.execute(
+                    "INSERT OR IGNORE INTO locations (id, name) VALUES (?, ?)",
+                    (db.location_identifier(outcome.scene_location), outcome.scene_location)
+                )
             for character in characters:
                 values = character.model_dump(exclude={"created_at"})
                 values["known_locations"] = json.dumps(values["known_locations"])
@@ -267,18 +304,27 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                     tuple(values.values())
                 )
                 observed_events = [event for event in outcome.events if character.id in event.witnesses]
-                observations = [event.description for event in observed_events]
+                details = {detail.character_id: detail for event in observed_events for detail in event.witness_details}
+                observations = [
+                    (details[event.id].perceived_text or details[event.id].detail or event.description)
+                    if event.id in details else event.description for event in observed_events
+                ]
                 await connection.execute(
                     "INSERT INTO character_observations VALUES (?, ?) ON CONFLICT(character_id) DO UPDATE SET content = excluded.content",
                     (character.id, "\n".join(observations) or "Ei uusia havaintoja.")
                 )
-                for event in observed_events:
+                for event, observation in zip(observed_events, observations):
                     await connection.execute(
                         "INSERT INTO character_memories (character_id, scene_index, memory_type, content, importance_score, source_event_id, created_at_turn) VALUES (?, ?, 'observation', ?, 1, ?, ?)",
-                        (character.id, turn.scene_id, event.description, event.id, turn.turn_index)
+                        (character.id, turn.scene_id, observation, event.id, turn.turn_index)
                     )
             for intention in audit.get("intentions", []):
                 memory = intention.get("memory")
+                for memory_id in intention.get("context_manifest", {}).get("memory_ids", []):
+                    await connection.execute(
+                        "UPDATE character_memories SET last_accessed = CURRENT_TIMESTAMP WHERE id = ? AND character_id = ?",
+                        (memory_id, intention["character_id"])
+                    )
                 if memory and memory.strip():
                     source = next((event.id for event in outcome.events
                                    if intention["character_id"] in event.witnesses), None)
@@ -287,6 +333,13 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                         (intention["character_id"], turn.scene_id, memory.strip(),
                          max(1, min(10, int(intention.get("importance", 5)))), source, turn.turn_index)
                     )
+                for belief in intention.get("belief_updates", []):
+                    if isinstance(belief, str) and belief.strip():
+                        await connection.execute(
+                            "INSERT INTO character_memories (character_id, scene_index, memory_type, content, importance_score, source_event_id, created_at_turn) VALUES (?, ?, 'belief', ?, ?, NULL, ?)",
+                            (intention["character_id"], turn.scene_id, belief.strip(),
+                             max(1, min(10, int(intention.get("importance", 5)))), turn.turn_index)
+                        )
             inserted = await connection.execute(
                 "INSERT INTO scene_turns (scene_id, turn_index, acting_character_id, perceived_context, internal_monologue, character_action, director_prose, choices, image_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (turn.scene_id, turn.turn_index, turn.acting_character_id, turn.perceived_context, turn.internal_monologue, turn.character_action, turn.director_prose, json.dumps(turn.choices), turn.image_prompt)
@@ -298,10 +351,13 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                     "INSERT OR IGNORE INTO events (id, turn_id, description, derived_from, actor_id) VALUES (?, ?, ?, ?, ?)",
                     (event.id, turn_id, event.description, event.derived_from, event.actor_id)
                 )
+                details = {detail.character_id: detail for detail in event.witness_details}
                 for witness in event.witnesses:
+                    detail = details.get(witness)
                     await connection.execute(
                         "INSERT OR IGNORE INTO event_witnesses (event_id, character_id, detail, modality, perceived_text) VALUES (?, ?, ?, ?, ?)",
-                        (event.id, witness, event.description, "saw", None)
+                        (event.id, witness, (detail.detail or event.description) if detail else event.description,
+                         detail.modality if detail else "saw", detail.perceived_text if detail else None)
                     )
             for reveal in plan.get("reveals", []):
                 async with connection.execute("SELECT reveal_state FROM secret_truths WHERE id = ?", (reveal["truth_id"],)) as cursor:
@@ -312,7 +368,9 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                         "UPDATE secret_truths SET reveal_state = ?, revealed_at_turn = CASE WHEN ? = 'revealed' THEN ? ELSE revealed_at_turn END WHERE id = ?",
                         (next_state, next_state, turn.turn_index, reveal["truth_id"])
                     )
-            ticks = {item["clock_id"]: item.get("amount", 1) for item in plan.get("clock_ticks", [])}
+            ticks = {}
+            for item in plan.get("clock_ticks", []):
+                ticks[item["clock_id"]] = ticks.get(item["clock_id"], 0) + item.get("amount", 1)
             async with connection.execute("SELECT id FROM clocks") as cursor:
                 clock_rows = await cursor.fetchall()
             for (clock_id,) in clock_rows:
@@ -327,9 +385,26 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                 )
             for change in plan.get("state_changes", []):
                 if change.get("entity") == "item":
+                    if change["field"] == "holder_character_id":
+                        await connection.execute(
+                            "UPDATE items SET holder_character_id = ?, location_id = NULL WHERE id = ?",
+                            (change["value"], change["entity_id"])
+                        )
+                    elif change["field"] == "location_id":
+                        await connection.execute(
+                            "UPDATE items SET location_id = ?, holder_character_id = NULL WHERE id = ?",
+                            (change["value"], change["entity_id"])
+                        )
+                    else:
+                        await connection.execute(
+                            "UPDATE items SET state = ? WHERE id = ?",
+                            (change["value"], change["entity_id"])
+                        )
+                elif change.get("entity") == "relationship":
+                    character_a, character_b = change["entity_id"].split("|", 1)
                     await connection.execute(
-                        f"UPDATE items SET {change['field']} = ? WHERE id = ?",
-                        (change["value"], change["entity_id"])
+                        f"UPDATE relationships SET {change['field']} = ? WHERE character_a = ? AND character_b = ?",
+                        (change["value"], character_a, character_b)
                     )
             state = {key: getattr(outcome, key) for key in ("summary", "world_facts", "plot_threads", "decision_character_ids")}
             previous_state = json.loads(before["story_runtime"][0]["state_json"]) if before["story_runtime"] else {}
@@ -370,7 +445,7 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                      audit.get("player_view_errors", {}).get(character_id, ""))
                 )
             await connection.execute(
-                "INSERT INTO turn_snapshots VALUES (?, ?, ?, ?)",
+                "INSERT INTO turn_snapshots (turn_id, request_id, before_json, after_json) VALUES (?, ?, ?, ?)",
                 (turn_id, response.request_id, _encode_snapshot(before), _encode_snapshot(await _capture_state(connection)))
             )
             await connection.commit()
@@ -419,11 +494,12 @@ async def rollback_last_turn(story_id: str, expected_revision: int):
             async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
                 if (await cursor.fetchone())[0] != expected_revision:
                     raise TurnConflictError("Tarina muuttui. Lataa se uudelleen ennen kumoamista.")
-            async with connection.execute("SELECT turn_id, request_id, before_json, after_json FROM turn_snapshots WHERE turn_id = (SELECT MAX(id) FROM scene_turns)") as cursor:
+            async with connection.execute("SELECT turn_id, request_id, before_json, after_json FROM turn_snapshots WHERE branch_id = 'main' AND turn_id = (SELECT MAX(id) FROM scene_turns WHERE branch_id = 'main')") as cursor:
                 snapshot = await cursor.fetchone()
             if not snapshot:
                 raise TurnConflictError("Vuorolla ei ole palautuspistetta. Vanhoja vuoroja tai aloitusta ei voi kumota.")
-            if await _capture_state(connection) != _decode_snapshot(snapshot[3]):
+            after = _decode_snapshot(snapshot[3])
+            if await _capture_state(connection, after.keys()) != after:
                 raise TurnConflictError("Vuoron jalkeen on muokattu tarinan tilaa. Kumoaminen poistaisi nama muutokset.")
             before = _decode_snapshot(snapshot[2])
             await connection.execute("DELETE FROM event_witnesses WHERE event_id IN (SELECT id FROM events WHERE turn_id = ?)", (snapshot[0],))
@@ -456,9 +532,12 @@ async def rollback_last_turn(story_id: str, expected_revision: int):
 async def can_rollback(story_id: str) -> bool:
     await db.init_story_db(story_id)
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
-        async with connection.execute("SELECT after_json FROM turn_snapshots WHERE turn_id = (SELECT MAX(id) FROM scene_turns)") as cursor:
+        async with connection.execute("SELECT after_json FROM turn_snapshots WHERE branch_id = 'main' AND turn_id = (SELECT MAX(id) FROM scene_turns WHERE branch_id = 'main')") as cursor:
             row = await cursor.fetchone()
-        return bool(row) and await _capture_state(connection) == _decode_snapshot(row[0])
+        if not row:
+            return False
+        after = _decode_snapshot(row[0])
+        return await _capture_state(connection, after.keys()) == after
 
 
 async def rebuild_exports(story_id: str):
