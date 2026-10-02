@@ -95,11 +95,13 @@ class PromptLoader:
         prompt_name: str,
         tone_profile: str = "default",
         custom_tone_override: Optional[str] = None,
+        include_tone: bool = True,
         **variables: Any
     ) -> str:
         """Kokoaa täydellisen system promptin liittämällä turvallisuus-, sävy- ja kielidirektiivit."""
         safety = self.get_safety_directive().strip()
-        tone = (custom_tone_override.strip() if custom_tone_override else self.get_tone_profile_content(tone_profile).strip())
+        tone = ((custom_tone_override.strip() if custom_tone_override else self.get_tone_profile_content(tone_profile).strip())
+                if include_tone else "")
         raw_body = self.get_raw_prompt(f"{prompt_name}.txt")
         language = self.get_language_directive().strip()
 

@@ -43,11 +43,11 @@ The mode can be changed during a story. **Play as character** on a character car
 
 ## Reading Views And Evolving Plot
 
-The reading toolbar separates omniscient narrator prose from the selected player character's limited view. Roleplay displays the limited view; switching to novel or simulation returns to the narrator view. The narrator can incorporate characters' supplied private thoughts. Limited prose and recaps are generated from only that character's profile, memories, intention and witnessed events, never from shared omniscient prose. This adds one narrator-model call whenever a player character is selected, including novel and simulation. Both versions must succeed before the turn commits. Witness attribution remains model-dependent; this is not multi-user access control.
+The reading toolbar separates omniscient narrator prose from the selected player character's limited view. Roleplay displays the limited view; switching to novel or simulation returns to the narrator view. The narrator can incorporate characters' supplied private thoughts. Limited prose and recaps are generated from only that character's public profile, memories, intention and witnessed events, never from shared omniscient prose. The canonical turn commits first; a failed limited-view call is recorded as `view_failed` and can be retried without undoing the turn. Witness attribution remains model-dependent; this is not multi-user access control.
 
 Chapter navigation uses stable titles. Optional recaps and titles follow the selected viewpoint. Legacy turns or turns belonging to another selected character have an explicit unavailable-view marker rather than a guessed or omniscient fallback. The prose editor edits only narrator text and does not rewrite the limited version. TXT/Markdown exports remain narrator prose.
 
-The atomic runtime now also stores the model's evolving plot plan, current director notes and updated world description alongside cumulative summary, facts and open threads. Subsequent planning uses updated versions when available, with original metadata retained as background. Undo restores evolving state. Plans describe possible developments, not established facts. Empty updates retain the previous version.
+The story bible stores 4–8 discoverable objective truths, 1–3 pressure clocks, and up to two offscreen agents separately from character/player context. New stories generate the bible during initialization; old stories receive one on their first advance. Truths progress from hidden to hinted to revealed, clocks tick on each beat and create observable expiry events, and three stagnant beats force a concrete reveal, clock tick, offscreen move, or state change. Locations, items, relationships, events, and per-character witnesses are stored as structured rows.
 
 ## Text Editing
 
@@ -73,11 +73,11 @@ Story state and revision
 
 **Prose is not a shared source of character knowledge.** The narrator returns separate events and their witnesses. The engine gives each character only the events that character witnessed. The director's plot, other characters' thoughts, and omniscient narration are not passed directly into character prompts.
 
-Memory retrieval combines recent memories with older memories that are verbally related to the location or motif and marked as important. The narrator maintains a cumulative summary, persistent facts, open plot threads, and the next decision-makers. This is bounded text memory, not an unlimited or infallible memory system.
+Memory retrieval is stable and combines recency, importance, and keyword relevance while keeping high-importance memories. Memories link to source events; narrator-written interpretation is not inserted as first-person character memory. Recap deltas are merged by the engine and bounded deterministically.
 
 ## Storage and Recovery
 
-- Each story has its own SQLite database at `stories/<id>/story.db`.
+- Each story has its own SQLite database at `stories/<id>/story.db`; schema version 8 includes a `story_branches` foundation and the default `main` branch.
 - Character changes, observations, memories, scene, prose, continuity state, and request receipt are committed together in one transaction.
 - A state revision prevents generation based on stale state from overwriting an intervening edit.
 - Resubmitting the same request ID returns the committed response. Do not reuse an ID for different content.
@@ -86,7 +86,7 @@ Memory retrieval combines recent memories with older memories that are verbally 
 - Truncated or invalid model responses are rejected; they are not turned into an invented fallback story.
 - `story.txt` and `story.md` are exports generated from the database. Manual edits to them do not update story state and will be overwritten by the next export.
 
-An old database is migrated when opened. Older databases are backed up to `story.pre-v4.db`; version 4 databases receive `story.pre-v5.db` before the editor migration. Keep additional backups of important stories. Do not use the same story directory from multiple computers at once through cloud sync.
+An old database is migrated when opened (schema version 8). Migration adds structured world state, events, memory provenance, compressed undo snapshots, and a `main` branch foundation without removing existing stories. Older databases are backed up before migration. Keep additional backups of important stories. Do not use the same story directory from multiple computers at once through cloud sync.
 
 ## Privacy and Configuration
 
@@ -96,9 +96,11 @@ API keys are stored in the server-side `.env` and `.provider-profiles.json` file
 
 The application is a local, single-owner tool. It has no login or multi-user support and is not intended for internet deployment. The service accepts localhost hosts and rejects requests from foreign browser origins. Story and prompt paths are confined to their own directories. Model output and imported character-card text are not executed as HTML.
 
-Settings provide a shared provider and separate narrator and character models. The code supports xAI, Azure, Gemini, OpenAI, OpenRouter, and OpenAI-compatible endpoints; the browser profile view covers xAI, Azure and Google AI Studio. Gemini uses Google's OpenAI-compatible text endpoint. Configure `GEMINI_API_KEY` and `LLM_PROVIDER=gemini` or create a browser profile. Model names are editable. Google's current documentation restricts 2.5 models to previous users, so new profiles default to the documented newer Flash and Flash-Lite models. See the [Gemini assessment (Finnish)](ARVIO_GEMINI.md). Other providers can be configured through environment settings.
+Settings provide a shared provider and separate narrator and character models. Planning, prose, story initialization, characters and player views have separate temperature/token/reasoning settings (`DIRECTOR_PLAN_*`, `PROSE_*`, `STORY_INIT_*`, `CHARACTER_*`, `PLAYER_VIEW_*`). The code supports xAI, Azure, Gemini, OpenAI, OpenRouter, and OpenAI-compatible endpoints; the browser profile view covers xAI, Azure and Google AI Studio. Gemini uses Google's OpenAI-compatible text endpoint. Configure `GEMINI_API_KEY` and `LLM_PROVIDER=gemini` or create a browser profile. Model names are editable. Google's current documentation restricts 2.5 models to previous users, so new profiles default to the documented newer Flash and Flash-Lite models. See the [Gemini assessment (Finnish)](ARVIO_GEMINI.md). Other providers can be configured through environment settings.
 
 The API log includes input, output, reasoning, and cached tokens when reported by the service. Cached tokens are a subset of input tokens. A price is shown only when reported by the service, and the summary indicates how many calls have price data. A missing price does not mean a call was free.
+
+Full prompt and response content can be retained gzip-compressed in the local `api_calls` table with `LLM_CALL_CONTENT_LOGGING=true`. This is disabled by default because prompts contain private story material. `LLM_CALL_RETENTION_DAYS` defaults to 30.
 
 `MAX_INPUT_TOKENS` limits the estimated input size (default: 64000). The estimate is character-based, not the model's exact tokenizer. Exceeding the limit stops the request before the network call; content is not silently truncated.
 
@@ -132,4 +134,4 @@ The UI has been tried during development at desktop and mobile widths, but compr
 
 Witness filtering prevents direct leakage of shared prose context. The narrator is still a language model and may produce an incorrect account of who witnessed an event or an inconsistent consequence. Schema validation does not prove that events are semantically correct. Decision points and paragraph pacing depend on the model and prompts.
 
-Story branches, automatic reconciliation of prose edits, image generation, and a multi-process server job queue are not implemented. Illustration prompts can still be generated. These features should build on the committed event and state model rather than bypass it.
+Branch storage and branch-aware turn/snapshot identifiers are present, but branch creation and UI are not implemented. Automatic reconciliation of prose edits, image generation, and a multi-process server job queue are also not implemented. Illustration prompts can still be generated. These features should build on the committed event and state model rather than bypass it.

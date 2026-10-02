@@ -18,6 +18,12 @@ class Character(BaseModel):
     gender: Optional[str] = None
     appearance: str = ""
     personality: str = ""
+    speech_style: str = ""
+    values: str = ""
+    current_goal: str = ""
+    fears: str = ""
+    skills: str = ""
+    limitations: str = ""
     is_player_controlled: bool = False
     physical_state: str = "Terve ja hyväkuntoinen"
     mental_state: str = "Rauhallinen ja tarkkaavainen"
@@ -29,6 +35,7 @@ class Character(BaseModel):
     last_active_turn: Optional[int] = None
     represents_group: Optional[str] = None
     group_size_hint: Optional[int] = None
+    location_id: Optional[str] = None
     created_at: Optional[str] = None
 
 class CharacterMemory(BaseModel):
@@ -38,6 +45,9 @@ class CharacterMemory(BaseModel):
     memory_type: str = "observation"  # observation, thought, event, sentiment
     content: str
     importance_score: float = 1.0
+    source_event_id: Optional[str] = None
+    last_accessed: Optional[str] = None
+    created_at_turn: Optional[int] = None
     created_at: Optional[str] = None
 
 class StoryMeta(BaseModel):
@@ -124,4 +134,5 @@ class TurnResponse(BaseModel):
     story_text_snippet: str
     is_chapter_end: bool = False
     requires_player_input: bool = False
+    player_view_status: Optional[str] = None
     watchdog_note: Optional[str] = None

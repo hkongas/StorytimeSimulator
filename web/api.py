@@ -292,6 +292,16 @@ async def edit_turn(story_id: str, turn_id: int, req: TurnProseUpdate):
     return {"status": "success", "revision": await turn_store.get_revision(story_id)}
 
 
+@app.post("/api/stories/{story_id}/turns/{turn_id}/player-view/retry")
+async def retry_player_view(story_id: str, turn_id: int, character_id: str):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    try:
+        return await engine.retry_player_view(story_id, turn_id, character_id)
+    except ValueError as error:
+        raise HTTPException(409, str(error))
+
+
 @app.post("/api/stories/{story_id}/turns/undo")
 async def undo_turn(story_id: str, req: TurnUndoRequest):
     if not await db.get_story_meta(story_id):
