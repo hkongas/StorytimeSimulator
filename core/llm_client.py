@@ -247,7 +247,8 @@ class LLMClient:
                         cached_tokens=u.get("cached_tokens", 0),
                         cost_known=u.get("cost_known", False),
                         error_message=str(tre)[:500],
-                        prompt_data={"messages": messages, "json_schema": json_schema}
+                        prompt_data={"messages": messages, "json_schema": json_schema},
+                        response_data={"partial_text": tre.partial_text, "finish_reason": tre.finish_reason}
                     )
                 if attempt < attempts:
                     # Korotetaan token-budjettia merkittävästi toiselle yritykselle

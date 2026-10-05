@@ -4,4 +4,10 @@ The supplied secret truths are objective facts, not possibilities. Events are fa
 
 Use reveals to move an existing truth from hidden to hinted or from hinted to revealed. Use clock_ticks and offscreen_moves to advance pressure, and state_changes for concrete world changes. If a forced-advance instruction is present, the beat must cause at least one such change.
 
+state_changes accepts only these combinations, using ids from the supplied data; anything else is discarded:
+- entity "character", entity_id = character id, field one of location_id (a supplied location id), physical_state, mental_state (text), or status (active, unconscious, dead, inactive, archived).
+- entity "item", entity_id = item id, field one of holder_character_id (a present character id or null), location_id (a supplied location id), or state (text).
+- entity "relationship", entity_id = "character_a|character_b" exactly as in the supplied relationships, field one of attitude, summary (text) or trust (number from -1 to 1).
+Do not invent new entities or fields; describe other changes in events instead.
+
 Events should be world- or consequence-driven and observable. Witnesses must be limited to characters who could perceive each event. Do not make decisions for characters here. Keep plot progression decisive: every mystery has an explanation in the supplied truths.

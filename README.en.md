@@ -100,9 +100,11 @@ Settings provide a shared provider and separate narrator and character models. P
 
 The API log includes input, output, reasoning, and cached tokens when reported by the service. Cached tokens are a subset of input tokens. A price is shown only when reported by the service, and the summary indicates how many calls have price data. A missing price does not mean a call was free.
 
-Full prompt and response content can be retained gzip-compressed in the local `api_calls` table with `LLM_CALL_CONTENT_LOGGING=true`. This is disabled by default because prompts contain private story material. `LLM_CALL_RETENTION_DAYS` defaults to 30.
+Full prompt and response content can be retained gzip-compressed in the local `api_calls` table with `LLM_CALL_CONTENT_LOGGING=true`. The log viewer's **Content** action opens an individual request and response. This is disabled by default because prompts contain private story material. `LLM_CALL_RETENTION_DAYS` defaults to 30.
 
 `MAX_INPUT_TOKENS` limits the estimated input size (default: 64000). The estimate is character-based, not the model's exact tokenizer. Exceeding the limit stops the request before the network call; content is not silently truncated.
+
+Output budgets default to 128000 tokens for the director and prose, and 64000 for character agents and structured planning/player-view responses. Saved browser profiles and `.env` values override these defaults and are not changed automatically. The model or provider's own output limit still applies. Azure v1 uses `max_completion_tokens`, which may include reasoning tokens; truncation retries can increase the requested budget, so these values are not hard cost caps.
 
 ## Project Structure
 

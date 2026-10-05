@@ -267,6 +267,7 @@ Deliver the sensory perception briefing directly for '{character.name}'.
                                                      custom_tone_override=meta.custom_tone_override)
         system += "\n" + prompt_loader.get_raw_prompt(f"director/mode_{mode}.txt")
         no_progress = int(runtime.get("no_progress_beats", 0))
+        world_state = await db.get_planning_world(story_id)
         if no_progress >= 2:
             system += "\nFORCED ADVANCE: The last two beats made no objective change. This beat must reveal a truth, tick a clock, move an offscreen agent, or change a concrete world state."
         data = await self.llm.json_completion(
@@ -286,6 +287,9 @@ Deliver the sensory perception briefing directly for '{character.name}'.
                 "truths": bible["secret_truths"],
                 "clocks": bible["clocks"],
                 "offscreen_agents": bible["offscreen_agents"],
+                "items": world_state["items"],
+                "relationships": world_state["relationships"],
+                "locations": world_state["locations"],
                 "no_progress_beats": no_progress
             }, ensure_ascii=False)}], role="director", story_id=story_id,
             temperature=settings.DIRECTOR_PLAN_TEMPERATURE,
@@ -321,6 +325,10 @@ Deliver the sensory perception briefing directly for '{character.name}'.
             role="director", story_id=story_id, temperature=settings.PLAYER_VIEW_TEMPERATURE,
             max_tokens=settings.PLAYER_VIEW_MAX_TOKENS, reasoning_effort=settings.PLAYER_VIEW_REASONING_EFFORT,
             json_schema=pydantic_to_json_schema(PlayerViewResponse, "player_view"))
+        if not result.get("prose"):
+            result["prose"] = result.get("recap_delta") or result.get("recap") or " ".join(perceived_events)
+        if not result.get("chapter_title"):
+            result["chapter_title"] = previous_view.get("chapter_title") or runtime.get("chapter_title") or "Ensimmäinen luku"
         view = PlayerViewResponse.model_validate(result).model_dump()
         delta = view["recap_delta"] or view["recap"]
         combined = "\n".join(part for part in (previous_view.get("recap", "").strip(), delta.strip()) if part)

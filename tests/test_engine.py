@@ -404,6 +404,11 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(gzip.decompress(base64.b64decode(record["prompt_payload"][5:])))["messages"][0]["content"],
                          "private prompt")
         self.assertIsNotNone(record["turn_index"])
+        content = await db.get_api_call_content("test", record["id"])
+        self.assertIsNotNone(content)
+        assert content is not None
+        self.assertEqual(content["prompt"]["messages"][0]["content"], "private prompt")
+        self.assertEqual(content["response"]["action"], "test")
 
     async def test_incomplete_schema_is_rejected_before_database_creation(self):
         from unittest.mock import patch, mock_open
@@ -522,6 +527,46 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         metadata = await turn_store.get_reading_metadata(story_id)
         self.assertIn("char_eerik", metadata[latest_turn_id]["player_views"])
 
+    async def test_player_view_retries_once_after_transient_failure(self):
+        model, engine, story_id = await self.create_recorded_story()
+        await db.set_player_character(story_id, "char_eerik")
+        original = model.json_completion
+        failures = 1
+
+        async def flaky(*args, **kwargs):
+            nonlocal failures
+            schema_name = kwargs.get("json_schema", {}).get("json_schema", {}).get("name")
+            if schema_name == "player_view" and failures:
+                failures -= 1
+                raise RuntimeError("temporary provider failure")
+            return await original(*args, **kwargs)
+
+        model.json_completion = flaky
+        response = await engine.advance_turn(story_id, mode="roleplay", user_input="Tarkkailen")
+        self.assertEqual(response.player_view_status, "view_ready")
+        self.assertEqual(response.warnings, [])
+
+    async def test_player_view_fills_missing_required_fields(self):
+        from database import turn_store
+        model, engine, story_id = await self.create_recorded_story()
+        await db.set_player_character(story_id, "char_eerik")
+        original = model.json_completion
+
+        async def recap_only(*args, **kwargs):
+            schema_name = kwargs.get("json_schema", {}).get("json_schema", {}).get("name")
+            if schema_name == "player_view":
+                return {"recap_delta": "Mira piti ovella vahtia."}
+            return await original(*args, **kwargs)
+
+        model.json_completion = recap_only
+        response = await engine.advance_turn(story_id, mode="roleplay", user_input="Tarkkailen")
+        self.assertEqual(response.player_view_status, "view_ready")
+        metadata = await turn_store.get_reading_metadata(story_id)
+        latest_turn_id = str(max(int(turn_id) for turn_id in metadata))
+        view = metadata[latest_turn_id]["player_views"]["char_eerik"]
+        self.assertEqual(view["prose"], "Mira piti ovella vahtia.")
+        self.assertEqual(view["chapter_title"], "Ensimmäinen luku")
+
     async def test_player_view_prompt_excludes_truths_and_other_private_thoughts(self):
         model, engine, story_id = await self.create_recorded_story()
         await db.set_player_character(story_id, "char_eerik")
@@ -537,7 +582,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         result = PlayerViewResponse(prose="Näkökulma", recap="x" * 5000, chapter_title="Luku")
         self.assertLessEqual(len(result.recap), 4000)
 
-    async def test_state_change_rejects_unknown_item(self):
+    async def test_state_change_discards_unknown_item(self):
         model, engine, story_id = await self.create_recorded_story()
         original = model.json_completion
 
@@ -548,9 +593,35 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             return result
 
         model.json_completion = invalid_change
-        with self.assertRaisesRegex(ValueError, "tuntemattomaan esineeseen"):
-            await engine.advance_turn(story_id, mode="simulation")
-        self.assertEqual(len(await db.get_all_story_turns(story_id)), 1)
+        response = await engine.advance_turn(story_id, mode="simulation")
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 2)
+        self.assertEqual(response.warnings, [])
+
+    async def test_unsupported_state_change_is_discarded_with_warning(self):
+        model, engine, story_id = await self.create_recorded_story()
+        original = model.json_completion
+
+        async def unsupported_change(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
+                result["state_changes"] = [{"entity": "location", "entity_id": "x", "field": "name", "value": "Y"},
+                                           {"entity": "relationship", "entity_id": "a|b", "field": "id = 1; --", "value": "Z"}]
+            return result
+
+        model.json_completion = unsupported_change
+        response = await engine.advance_turn(story_id, mode="simulation")
+        self.assertEqual(len(response.warnings), 2)
+        self.assertEqual(len(await db.get_all_story_turns(story_id)), 2)
+
+    async def test_planner_receives_items_relationships_and_locations(self):
+        import json
+        model, engine, story_id = await self.create_recorded_story()
+        await engine.advance_turn(story_id, mode="simulation")
+        plan_call = next(messages for role, messages in model.calls if '"truths"' in messages[1]["content"])
+        payload = json.loads(plan_call[1]["content"])
+        for key in ("items", "relationships", "locations"):
+            self.assertIn(key, payload)
+        self.assertTrue(payload["locations"])
 
     async def test_unintended_voluntary_event_is_removed(self):
         import aiosqlite

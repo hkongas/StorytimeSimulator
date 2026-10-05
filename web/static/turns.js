@@ -286,7 +286,6 @@ async function advanceStory() {
   }};
   pendingTurns[storyId] = record;
   record.startedAt = Date.now();
-  document.getElementById('turnProgressLog').replaceChildren();
   renderChoices([]);
   showTurnProgress(record);
   savePendingTurns();
@@ -328,12 +327,6 @@ async function monitorTurn(record) {
     const result = await new Promise((resolve, reject) => {
       if (currentStoryId === record.storyId) showTurnProgress(record);
       const source = new EventSource(`/api/stories/${record.storyId}/turn-jobs/${requestId}/events`);
-      source.onopen = () => {
-        if (currentStoryId === record.storyId) document.getElementById('turnConnectionStatus').textContent = 'Seurantayhteys auki';
-      };
-      source.addEventListener('heartbeat', () => {
-        if (currentStoryId === record.storyId) document.getElementById('turnConnectionStatus').textContent = 'Palvelin vastaa · työ jatkuu';
-      });
       clock = setInterval(() => {
         if (currentStoryId === record.storyId) document.getElementById('turnElapsed').textContent = `${Math.max(0, Math.floor((Date.now() - (record.startedAt || Date.now())) / 1000))} s`;
       }, 1000);
@@ -341,21 +334,6 @@ async function monitorTurn(record) {
         const progress = JSON.parse(event.data);
         if (currentStoryId === record.storyId) {
           showLiveAgentBar(true, progress.message);
-          const item = document.createElement('li');
-          item.textContent = progress.message;
-          if (progress.character_thought && record.payload.mode !== 'roleplay') {
-            const thought = document.createElement('details');
-            thought.className = 'progress-thought';
-            const heading = document.createElement('summary');
-            heading.textContent = 'Hahmon ajatus';
-            const text = document.createElement('p');
-            text.textContent = progress.character_thought;
-            thought.append(heading, text);
-            item.appendChild(thought);
-          }
-          document.getElementById('turnProgressLog').appendChild(item);
-          const log = document.getElementById('turnProgressLog');
-          while (log.children.length > 3) log.firstElementChild.remove();
         }
       });
       source.addEventListener('result', event => { source.close(); resolve(JSON.parse(event.data)); });
@@ -389,8 +367,7 @@ async function monitorTurn(record) {
     }
   } catch (error) {
     if (currentStoryId === record.storyId) {
-      showLiveAgentBar(true, 'Seuranta keskeytyi, mutta taustatyö voi edelleen jatkua.');
-      document.getElementById('turnConnectionStatus').textContent = 'Yhteys katkennut';
+      showLiveAgentBar(true, 'Seurantayhteys katkesi.');
       document.getElementById('autoContinue').checked = false;
       turnNotice(error.message, true);
     }
@@ -402,10 +379,12 @@ async function monitorTurn(record) {
 
 function showTurnProgress(record) {
   renderChoices([]);
-  showLiveAgentBar(true, 'Valmistellaan tarinan jatkoa...');
-  document.getElementById('submittedAction').textContent = [record.payload.user_input,
-    record.payload.custom_guidance && `Maailmanmuutos: ${record.payload.custom_guidance}`].filter(Boolean).join('\n') || 'Tarina jatkuu itsenäisesti.';
-  document.getElementById('turnConnectionStatus').textContent = 'Yhdistetään seurantaan...';
+  showLiveAgentBar(true, 'Valmistellaan vuoroa...');
+  const submittedAction = [record.payload.user_input,
+    record.payload.custom_guidance && `Maailmanmuutos: ${record.payload.custom_guidance}`].filter(Boolean).join('\n');
+  const submittedActionElement = document.getElementById('submittedAction');
+  submittedActionElement.textContent = submittedAction;
+  submittedActionElement.classList.toggle('hidden', !submittedAction);
   document.getElementById('turnElapsed').textContent = '';
   document.querySelector('.story-writing-area')?.classList.add('hidden');
 }

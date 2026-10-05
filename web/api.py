@@ -5,7 +5,7 @@ import logging
 from uuid import uuid4
 from urllib.parse import urlsplit
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Literal, Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse, StreamingResponse
@@ -223,6 +223,7 @@ async def get_story_details(story_id: str):
     runtime = await turn_store.get_runtime(story_id)
     can_undo = await turn_store.can_rollback(story_id)
     reading_metadata = await turn_store.get_reading_metadata(story_id)
+    bible = await db.get_story_bible(story_id)
     if revision != await turn_store.get_revision(story_id):
         raise turn_store.TurnConflictError("Tarina muuttui latauksen aikana. Lataa se uudelleen.")
 
@@ -235,10 +236,66 @@ async def get_story_details(story_id: str):
         "reading_metadata": reading_metadata,
         "chronicle": chronicle,
         "runtime": runtime,
+        "bible": bible,
         "revision": revision,
         "can_undo": can_undo,
         "full_text": full_text
     }
+
+class BibleTruth(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    fact: str = Field(min_length=1, max_length=2000)
+    discoverable_via: str = Field(default="", max_length=1000)
+    reveal_state: Literal["hidden", "hinted", "revealed"] = "hidden"
+    related_location_id: Optional[str] = Field(default=None, max_length=200)
+
+class BibleClock(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=1000)
+    remaining_beats: int = Field(ge=0, le=1000)
+    on_expire_effect: str = Field(default="", max_length=1000)
+    visible: bool = False
+
+class BibleOffscreenAgent(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=200)
+    goal: str = Field(min_length=1, max_length=1000)
+    progress: str = Field(default="", max_length=1000)
+    location: str = Field(default="", max_length=200)
+    next_move: str = Field(default="", max_length=1000)
+    visible_to: List[str] = Field(default_factory=list)
+
+class BibleUpdateRequest(BaseModel):
+    secret_truths: List[BibleTruth] = Field(max_length=30)
+    clocks: List[BibleClock] = Field(max_length=10)
+    offscreen_agents: List[BibleOffscreenAgent] = Field(max_length=10)
+    expected_revision: Optional[int] = Field(default=None, ge=0)
+
+@app.put("/api/stories/{story_id}/bible")
+async def update_story_bible(story_id: str, req: BibleUpdateRequest):
+    """Tallentaa kertojan salaiset totuudet, kellot ja kuvaruudun ulkopuoliset toimijat."""
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    for label, items in (("salaisuuksien", req.secret_truths), ("kellojen", req.clocks), ("sivuhenkilöiden", req.offscreen_agents)):
+        if len({item.id for item in items}) != len(items):
+            raise ValueError(f"{label} tunnisteiden on oltava yksilöllisiä.")
+    known_ids = {character.id for character in await db.get_all_characters(story_id)}
+    for agent in req.offscreen_agents:
+        if not set(agent.visible_to) <= known_ids:
+            raise ValueError("Sivuhenkilön näkyvyys viittaa tuntemattomaan hahmoon.")
+    existing = {truth["id"]: truth for truth in (await db.get_story_bible(story_id))["secret_truths"]}
+    turn_index = max((turn.turn_index for turn in await db.get_all_story_turns(story_id)), default=0)
+    truths = []
+    for truth in req.secret_truths:
+        values = truth.model_dump()
+        previous = existing.get(truth.id, {}).get("revealed_at_turn")
+        values["revealed_at_turn"] = (previous if previous is not None else turn_index) if truth.reveal_state == "revealed" else None
+        truths.append(values)
+    await db.save_story_bible(
+        story_id, truths, [clock.model_dump() for clock in req.clocks],
+        [agent.model_dump() for agent in req.offscreen_agents], expected_revision=req.expected_revision
+    )
+    return {"status": "success", "bible": await db.get_story_bible(story_id), "revision": await turn_store.get_revision(story_id)}
 
 class TurnProseUpdate(BaseModel):
     prose: str = Field(min_length=1, max_length=200000)
@@ -764,7 +821,17 @@ async def update_settings(req: SettingsUpdate):
 async def get_story_logs(story_id: str, limit: int = 60):
     """Hakee tarinan rajapintalokit ja suoritustiedot."""
     logs = await db.get_api_calls_for_story(story_id, limit=limit)
+    for log in logs:
+        log.pop("prompt_payload", None)
+        log.pop("response_payload", None)
     return {"status": "success", "logs": logs}
+
+@app.get("/api/stories/{story_id}/logs/{call_id}")
+async def get_story_log_content(story_id: str, call_id: int):
+    content = await db.get_api_call_content(story_id, call_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="API-kutsua ei löydy.")
+    return {"status": "success", **content}
 
 @app.get("/api/stories/{story_id}/stats")
 async def get_story_stats(story_id: str):

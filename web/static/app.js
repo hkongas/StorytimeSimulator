@@ -512,6 +512,7 @@ function renderInspector(data) {
   }
 
   filterAndRenderCharacters();
+  if (typeof renderBible === "function") renderBible(data);
 }
 
 function switchInspectorTab(tabName) {
@@ -1381,11 +1382,11 @@ function createProfile(provider, name) {
     azure_openai_api_version: "2024-10-21",
     azure_deployment_name: "",
     director_model: provider === "gemini" ? "gemini-3.8-flash" : provider === "azure" ? "gpt-4o" : "grok-4.6",
-    director_max_tokens: provider === "azure" ? 32000 : 8000,
+    director_max_tokens: 128000,
     director_temperature: 0.85,
     director_reasoning_effort: "medium",
     character_model: provider === "gemini" ? "gemini-3.5-flash-lite" : provider === "azure" ? "gpt-4o" : "grok-4.3",
-    character_max_tokens: provider === "azure" ? 16000 : 1200,
+    character_max_tokens: 64000,
     character_temperature: 0.75,
     character_reasoning_effort: "low",
   };
@@ -1530,11 +1531,11 @@ function profileFromForm(profileId) {
     azure_deployment_name: document.getElementById('settingAzureApiMode').value === 'deployments'
       ? document.getElementById("settingAzureDeployment").value.trim() : "",
     director_model: document.getElementById("settingDirectorModel")?.value.trim() || "grok-4.6",
-    director_max_tokens: Number(document.getElementById("settingDirectorMaxTokens")?.value || (document.getElementById('settingProvider').value === 'azure' ? 32000 : 8000)),
+    director_max_tokens: Number(document.getElementById("settingDirectorMaxTokens")?.value || 128000),
     director_temperature: Number(document.getElementById("settingDirectorTemp")?.value || 0.85),
     director_reasoning_effort: document.getElementById("settingDirectorReasoning")?.value || "medium",
     character_model: document.getElementById("settingCharModel")?.value.trim() || "grok-4.3",
-    character_max_tokens: Number(document.getElementById("settingCharMaxTokens")?.value || (document.getElementById('settingProvider').value === 'azure' ? 16000 : 1200)),
+    character_max_tokens: Number(document.getElementById("settingCharMaxTokens")?.value || 64000),
     character_temperature: Number(document.getElementById("settingCharTemp")?.value || 0.75),
     character_reasoning_effort: document.getElementById("settingCharReasoning")?.value || "low",
   };
@@ -1783,7 +1784,7 @@ async function loadDebugLogs() {
   const tbody = document.getElementById("debugLogsTableBody");
   if (!summaryEl || !tbody) return;
 
-  tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted); padding: 20px;">Ladataan lokitietoja...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="11" style="text-align: center; color: var(--text-muted); padding: 20px;">Ladataan lokitietoja...</td></tr>`;
 
   try {
     const [statsRes, logsRes] = await Promise.all([
@@ -1832,7 +1833,7 @@ async function loadDebugLogs() {
 
     const logs = logsData.logs || [];
     if (logs.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted); padding: 20px;">Ei API-lokitietoja vielä tälle tarinalle.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="11" style="text-align: center; color: var(--text-muted); padding: 20px;">Ei API-lokitietoja vielä tälle tarinalle.</td></tr>`;
       return;
     }
 
@@ -1858,11 +1859,82 @@ async function loadDebugLogs() {
         <td><strong>${(log.total_tokens || 0).toLocaleString()}</strong></td>
         <td>${log.cost_known ? '$' + (log.cost_usd || 0).toFixed(5) : '-'}</td>
         <td>${statusBadge}</td>
+        <td></td>
       `;
+      const contentButton = document.createElement("button");
+      contentButton.type = "button";
+      contentButton.className = "btn btn-secondary btn-xs";
+      contentButton.textContent = "Sisältö";
+      contentButton.title = "Näytä mallille lähetetty pyyntö ja mallin vastaus";
+      contentButton.addEventListener("click", async () => {
+        const nextRow = tr.nextElementSibling;
+        if (nextRow?.dataset.logContentId === String(log.id)) {
+          nextRow.remove();
+          return;
+        }
+        contentButton.disabled = true;
+        try {
+          const response = await fetch(`/api/stories/${encodeURIComponent(currentStoryId)}/logs/${encodeURIComponent(log.id)}`);
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || "Lokisisällön lataus epäonnistui.");
+          const detailRow = document.createElement("tr");
+          detailRow.className = "debug-log-content";
+          detailRow.dataset.logContentId = String(log.id);
+          const cell = document.createElement("td");
+          cell.colSpan = 11;
+          const downloadButton = document.createElement("button");
+          downloadButton.type = "button";
+          downloadButton.className = "btn btn-secondary btn-sm debug-payload-download";
+          downloadButton.textContent = "Lataa JSON";
+          downloadButton.addEventListener("click", () => {
+            const exportContent = {
+              api_call: log,
+              request: data.prompt,
+              response: data.response,
+            };
+            const blob = new Blob([JSON.stringify(exportContent, null, 2)], {type: "application/json;charset=utf-8"});
+            const objectUrl = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = objectUrl;
+            link.download = `${currentStoryId}-api-call-${log.id}.json`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+          });
+          cell.appendChild(downloadButton);
+          for (const [label, value] of [["Pyyntö", data.prompt], ["Vastaus", data.response]]) {
+            const section = document.createElement("details");
+            section.open = true;
+            section.className = "debug-payload";
+            const summary = document.createElement("summary");
+            summary.textContent = label;
+            const pre = document.createElement("pre");
+            pre.textContent = value == null ? "Sisältöä ei tallennettu. Ota LLM_CALL_CONTENT_LOGGING käyttöön ja tee uusi kutsu." :
+              typeof value === "string" ? value : JSON.stringify(value, null, 2);
+            section.append(summary, pre);
+            cell.appendChild(section);
+          }
+          detailRow.appendChild(cell);
+          tr.after(detailRow);
+        } catch (error) {
+          const detailRow = document.createElement("tr");
+          detailRow.className = "debug-log-content";
+          detailRow.dataset.logContentId = String(log.id);
+          const cell = document.createElement("td");
+          cell.colSpan = 11;
+          cell.textContent = error.message;
+          detailRow.appendChild(cell);
+          tr.after(detailRow);
+        } finally {
+          contentButton.disabled = false;
+        }
+      });
+      tr.lastElementChild.appendChild(contentButton);
       tbody.appendChild(tr);
     });
   } catch (err) {
     console.error("Virhe ladattaessa API-lokeja:", err);
-    tbody.innerHTML = `<tr><td colspan="10" style="color: var(--accent-crimson); padding: 20px;">Latausvirhe: ${escapeHtml(err.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" style="color: var(--accent-crimson); padding: 20px;">Latausvirhe: ${escapeHtml(err.message)}</td></tr>`;
   }
 }

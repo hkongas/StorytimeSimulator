@@ -271,13 +271,6 @@ class StoryEngine:
             truths = {truth["id"]: truth for truth in bible["secret_truths"]}
             clocks = {clock["id"]: clock for clock in bible["clocks"]}
             offscreen = {agent["id"]: agent for agent in bible["offscreen_agents"]}
-            planned_progress = bool(
-                plan.reveals or plan.clock_ticks or plan.offscreen_moves or plan.state_changes
-                or plan.character_state_updates
-                or (plan.scene_location and plan.scene_location != scene.location)
-            )
-            if runtime.get("no_progress_beats", 0) >= 2 and not planned_progress:
-                raise ValueError("Pysähtynyttä tarinaa ei voi jatkaa ilman maailman etenemistä.")
             if len({reveal.truth_id for reveal in plan.reveals}) != len(plan.reveals):
                 raise ValueError("Samaa salaisuutta ei voi paljastaa kahdesti samalla vuorolla.")
             reveal_events = []
@@ -314,9 +307,17 @@ class StoryEngine:
                 "item": {"holder_character_id", "location_id", "state"},
                 "relationship": {"attitude", "trust", "summary"},
             }
+            plan_warnings = []
+            supported_changes = []
             for change in plan.state_changes:
                 if change.entity not in allowed_change_fields or change.field not in allowed_change_fields[change.entity]:
-                    raise ValueError("Suunnitelmassa on virheellinen tilamuutos.")
+                    logger.warning("Discarded unsupported planned state change %s.%s", change.entity, change.field)
+                    plan_warnings.append(f"Kertojan tukematon tilamuutos ohitettiin ({change.entity}.{change.field}).")
+                    continue
+                supported_changes.append(change)
+            plan.state_changes = supported_changes
+            validated_changes = []
+            for change in plan.state_changes:
                 if change.entity == "character":
                     if change.entity_id not in roster:
                         raise ValueError("Tilamuutos viittaa tuntemattomaan hahmoon.")
@@ -331,7 +332,8 @@ class StoryEngine:
                 elif change.entity == "item":
                     item = await db.get_item(story_id, change.entity_id)
                     if not item:
-                        raise ValueError("Tilamuutos viittaa tuntemattomaan esineeseen.")
+                        logger.warning("Discarded planned state change for unknown item %s", change.entity_id)
+                        continue
                     if change.field == "holder_character_id" and change.value is not None and change.value not in scene.active_character_ids:
                         raise ValueError("Esine voidaan siirtää vain paikalla olevalle hahmolle.")
                     if change.field == "state" and not isinstance(change.value, str):
@@ -350,6 +352,15 @@ class StoryEngine:
                             raise ValueError("Suhteen luottamuksen on oltava välillä -1 ja 1.")
                     elif not isinstance(change.value, str):
                         raise ValueError("Suhteen muutosarvon on oltava tekstiä.")
+                validated_changes.append(change)
+            plan.state_changes = validated_changes
+            planned_progress = bool(
+                plan.reveals or plan.clock_ticks or plan.offscreen_moves or plan.state_changes
+                or plan.character_state_updates
+                or (plan.scene_location and plan.scene_location != scene.location)
+            )
+            if runtime.get("no_progress_beats", 0) >= 2 and not planned_progress:
+                raise ValueError("Pysähtynyttä tarinaa ei voi jatkaa ilman maailman etenemistä.")
             plan.events.extend(reveal_events)
             planned_spawned = []
             for candidate in plan.spawned_characters:
@@ -558,7 +569,8 @@ class StoryEngine:
                 updated_characters=list(roster.values()), spawned_characters=spawned,
                 story_text_snippet=outcome.prose, is_chapter_end=outcome.chapter_end,
                 requires_player_input=plan.requires_player_input or outcome.requires_player_input or mode == "roleplay",
-                player_view_status="view_pending" if viewpoint_character else None
+                player_view_status="view_pending" if viewpoint_character else None,
+                warnings=list(plan_warnings)
             )
             turn = SceneTurn(scene_id=scene.id, turn_index=turn_index,
                              acting_character_id=player.id if mode == "roleplay" and player else None,
@@ -581,15 +593,21 @@ class StoryEngine:
                 expected_revision=revision)
             if viewpoint_character:
                 yield {"type": "phase", "phase": "player_view", "message": "Vuoro tallennettiin; muodostetaan hahmon tietorajattu näkökulma..."}
-                try:
-                    player_views[viewpoint_character.id] = await self.director.create_player_view(
-                        story_id, viewpoint_character, outcome, own_intention, runtime,
-                        scene.location, meta.tone_profile, meta.custom_tone_override)
-                    response.player_view_status = "view_ready"
-                except Exception as exc:
-                    logger.warning("Player view generation failed after committed turn %s: %s", turn_index, exc)
-                    response.player_view_status = "view_failed"
-                    response.warnings.append("Vuoro tallennettiin, mutta hahmon näkökulma epäonnistui. Sen voi yrittää uudelleen.")
+                for attempt in range(2):
+                    try:
+                        player_views[viewpoint_character.id] = await self.director.create_player_view(
+                            story_id, viewpoint_character, outcome, own_intention, runtime,
+                            scene.location, meta.tone_profile, meta.custom_tone_override)
+                        response.player_view_status = "view_ready"
+                        break
+                    except Exception as exc:
+                        if attempt == 0:
+                            logger.warning("Player view generation failed after committed turn %s; retrying once: %s",
+                                           turn_index, exc)
+                            continue
+                        logger.warning("Player view generation failed after retrying committed turn %s: %s", turn_index, exc)
+                        response.player_view_status = "view_failed"
+                        response.warnings.append("Vuoro tallennettiin, mutta hahmon näkökulma epäonnistui. Sen voi yrittää uudelleen.")
                 try:
                     committed_turn_id = max((item.id or 0 for item in await db.get_all_story_turns(story_id)), default=last_id + 1)
                     await turn_store.save_player_view(

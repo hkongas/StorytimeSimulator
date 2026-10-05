@@ -175,6 +175,28 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         settings.BASE_DIR = self.original_base
         self.temporary.cleanup()
 
+    async def test_api_log_content_endpoint(self):
+        from database import db
+        from unittest.mock import patch
+
+        created = await self.client.post("/api/stories", json={"title": "Log content test"})
+        story_id = created.json()["data"]["story_id"]
+        with patch.object(settings, "LLM_CALL_CONTENT_LOGGING", True):
+            await db.log_api_call(story_id, "director", "test-model", 0.1,
+                                  prompt_data={"messages": [{"content": "private prompt"}]},
+                                  response_data={"prose": "test response"})
+
+        logs = await self.client.get(f"/api/stories/{story_id}/logs")
+        self.assertEqual(logs.status_code, 200)
+        log = logs.json()["logs"][0]
+        self.assertNotIn("prompt_payload", log)
+        self.assertNotIn("response_payload", log)
+        content = await self.client.get(f"/api/stories/{story_id}/logs/{log['id']}")
+        self.assertEqual(content.status_code, 200)
+        self.assertEqual(content.json()["prompt"]["messages"][0]["content"], "private prompt")
+        self.assertEqual(content.json()["response"]["prose"], "test response")
+        self.assertEqual((await self.client.get(f"/api/stories/{story_id}/logs/999999")).status_code, 404)
+
     async def test_existing_api_cycle(self):
         await test_api_endpoints()
 
@@ -295,6 +317,39 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details["runtime"]["director_plan"], "MANUAL_PLAN")
         self.assertEqual(details["runtime"]["world_description"], "MANUAL_WORLD")
         self.assertEqual(details["runtime"]["director_notes"], "MANUAL_NOTES")
+
+    async def test_bible_is_returned_and_editable(self):
+        created = await self.client.post("/api/stories", json={"title": "Bible edit"})
+        sid = created.json()["data"]["story_id"]
+        endpoint = f"/api/stories/{sid}"
+        await engine.advance_turn(sid, mode="novel")
+        details = (await self.client.get(endpoint)).json()
+        bible = details["bible"]
+        self.assertEqual(len(bible["secret_truths"]), 4)
+        payload = {
+            "secret_truths": [{**truth, "fact": "MUOKATTU" if index == 0 else truth["fact"],
+                               "reveal_state": "revealed" if index == 0 else truth["reveal_state"]}
+                              for index, truth in enumerate(bible["secret_truths"])],
+            "clocks": [{**clock, "remaining_beats": 2} for clock in bible["clocks"]],
+            "offscreen_agents": [{"id": "agent_1", "name": "Vartija", "goal": "Etsiä", "visible_to": ["char_eerik"]}],
+            "expected_revision": details["revision"]
+        }
+        result = await self.client.put(endpoint + "/bible", json=payload)
+        self.assertEqual(result.status_code, 200)
+        saved = result.json()["bible"]
+        self.assertEqual(saved["secret_truths"][0]["fact"], "MUOKATTU")
+        self.assertEqual(saved["secret_truths"][0]["reveal_state"], "revealed")
+        self.assertIsNotNone(saved["secret_truths"][0]["revealed_at_turn"])
+        self.assertEqual(saved["clocks"][0]["remaining_beats"], 2)
+        self.assertEqual(saved["offscreen_agents"][0]["visible_to"], ["char_eerik"])
+        self.assertEqual((await self.client.put(endpoint + "/bible", json=payload)).status_code, 409)
+        payload.pop("expected_revision")
+        payload["offscreen_agents"][0]["visible_to"] = ["unknown"]
+        self.assertEqual((await self.client.put(endpoint + "/bible", json=payload)).status_code, 400)
+        payload["offscreen_agents"][0]["visible_to"] = []
+        payload["clocks"] = payload["clocks"] * 2
+        self.assertEqual((await self.client.put(endpoint + "/bible", json=payload)).status_code, 400)
+        self.assertEqual((await self.client.put("/api/stories/missing/bible", json=payload)).status_code, 404)
 
     async def test_prompt_paths_reject_escape(self):
         response = await self.client.get("/api/prompts/content", params={"path": "../../config.py"})

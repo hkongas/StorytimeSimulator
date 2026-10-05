@@ -54,7 +54,7 @@ class ClockTick(BaseModel):
 
 
 class StateChange(BaseModel):
-    entity: str
+    entity: str = Field(description="character, item or relationship")
     entity_id: str
     field: str
     value: Any

@@ -200,12 +200,34 @@ async def get_story_bible(story_id: str) -> Dict[str, List[Dict[str, Any]]]:
     return result
 
 
+async def get_planning_world(story_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Esineet, suhteet ja paikat kertojan suunnitelmaa varten, jotta tilamuutokset voivat viitata oikeisiin tunnisteisiin."""
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        connection.row_factory = aiosqlite.Row
+        result = {}
+        for key, query in (
+            ("items", "SELECT id, name, holder_character_id, location_id, state FROM items ORDER BY id"),
+            ("relationships", "SELECT character_a, character_b, attitude, trust, summary FROM relationships ORDER BY character_a, character_b"),
+            ("locations", "SELECT id, name FROM locations ORDER BY id"),
+        ):
+            async with connection.execute(query) as cursor:
+                result[key] = [dict(row) for row in await cursor.fetchall()]
+    return result
+
+
 async def save_story_bible(story_id: str, truths: List[Dict[str, Any]],
-                               clocks: List[Dict[str, Any]], agents: List[Dict[str, Any]]):
+                               clocks: List[Dict[str, Any]], agents: List[Dict[str, Any]],
+                               expected_revision: Optional[int] = None):
     await init_story_db(story_id)
     async with aiosqlite.connect(get_db_path(story_id)) as connection:
         await connection.execute("BEGIN IMMEDIATE")
         try:
+            if expected_revision is not None:
+                async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                    if (await cursor.fetchone())[0] != expected_revision:
+                        from database.turn_store import TurnConflictError
+                        raise TurnConflictError("Tarina muuttui toisaalla. Lataa tarina uudelleen ennen salaisuuksien tallennusta.")
             for table in ("secret_truths", "clocks", "offscreen_agents"):
                 await connection.execute(f"DELETE FROM {table}")
             for truth in truths:
@@ -890,6 +912,38 @@ async def get_api_calls_for_story(story_id: str, limit: int = 60) -> List[Dict[s
             for r in rows:
                 logs.append(dict(r))
     return logs
+
+async def get_api_call_content(story_id: str, call_id: int) -> Optional[Dict[str, Any]]:
+    """Purkaa yhden kutsun valinnaisesti gzip-pakatun promptin ja vastauksen."""
+    db_path = get_db_path(story_id)
+    if not db_path.exists():
+        return None
+    await init_story_db(story_id)
+
+    def unpack(value: Optional[str]) -> Any:
+        if not value:
+            return None
+        if value.startswith("gzip:"):
+            value = gzip.decompress(base64.b64decode(value[5:])).decode("utf-8")
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+
+    async with aiosqlite.connect(db_path) as connection:
+        connection.row_factory = aiosqlite.Row
+        async with connection.execute(
+            "SELECT id, prompt_payload, response_payload FROM api_calls WHERE story_id = ? AND id = ?",
+            (story_id, call_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "prompt": unpack(row["prompt_payload"]),
+        "response": unpack(row["response_payload"]),
+    }
 
 async def get_story_api_stats(story_id: str) -> Dict[str, Any]:
     """Laskee yhteenvedon tarinan API-käytöstä: tokenit, kesto, hinta ja viimeisin kutsu."""

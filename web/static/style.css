@@ -1238,7 +1238,7 @@ h1, h2, h3, h4, h5, h6,
 }
 
 .debug-table-wrapper {
-  overflow-x: auto;
+  overflow-x: hidden;
   max-height: 420px;
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -1246,15 +1246,17 @@ h1, h2, h3, h4, h5, h6,
 
 .debug-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.8rem;
   text-align: left;
 }
 
 .debug-table th, .debug-table td {
-  padding: 8px 12px;
+  padding: 7px 8px;
   border-bottom: 1px solid var(--border-color);
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .debug-table th {
@@ -1284,6 +1286,11 @@ h1, h2, h3, h4, h5, h6,
   color: #ff9800;
   font-weight: 600;
 }
+.debug-log-content td { white-space: normal; background: var(--bg-card); }
+.debug-payload { margin: 8px 0; }
+.debug-payload-download { margin: 4px 0 8px; }
+.debug-payload summary { cursor: pointer; font-weight: 600; }
+.debug-payload pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.78rem/1.45 var(--font-mono); }
 
 html { color-scheme: dark; }
 body, .app-layout { height: 100dvh; }
@@ -1320,12 +1327,10 @@ body[data-secrets="true"] .turn-header { display: flex; opacity: 0.65; font-size
 .composer-options #privateIntentionGroup:not(.hidden) + details { grid-column: 2; }
 .composer-options .auto-controls { grid-column: 3; grid-row: 1; }
 .turn-progress { margin: 12px 0; padding: 8px 0 8px 12px; border-left: 2px solid var(--color-primary); overflow-wrap: anywhere; }
-.submitted-action { white-space: pre-wrap; color: var(--text-secondary); margin: 0 0 12px; }
-.progress-connection { display: flex; justify-content: space-between; gap: 12px; font-size: 0.78rem; color: var(--text-secondary); margin: 8px 0; }
-#turnProgressLog { list-style: none; padding: 0; margin: 0; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem; }
-#turnProgressLog li:first-child:not(:last-child) { opacity: 0.5; }
-.progress-thought { margin: 4px 0 0; font-style: italic; color: var(--text-secondary); }
-.progress-thought summary { cursor: pointer; }
+.submitted-action { white-space: pre-wrap; color: var(--text-secondary); margin: 0 0 8px; font: inherit; }
+.agent-status-indicator { display: flex; align-items: center; gap: 8px; font: inherit; }
+.turn-progress-meta { display: flex; justify-content: flex-end; color: var(--text-secondary); font: inherit; }
+#turnElapsed { font: inherit; font-variant-numeric: tabular-nums; }
 .writing-hint { color: var(--text-secondary); opacity: 0.6; font-size: 0.85rem; }
 .reading-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 16px; font-size: 0.82rem; }
 .reading-toolbar select { max-width: 100%; min-width: 0; padding: 6px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; }
@@ -1358,7 +1363,7 @@ body[data-mode="roleplay"] .character-card[data-player="true"] .private-detail {
 .char-card-title { min-width: 0; flex-wrap: wrap; }
 .char-name, .state-item p { overflow-wrap: anywhere; }
 .modal-card { border-radius: 8px; width: min(600px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); }
-.modal-lg { width: min(900px, calc(100vw - 32px)); }
+.modal-lg { width: min(1500px, calc(100vw - 32px)); max-width: 1500px; }
 .modal-body { min-height: 0; }
 .creation-box { border-radius: 8px; }
 .inspector-panel { width: 340px; min-width: 340px; }
@@ -1406,3 +1411,17 @@ body[data-mode="roleplay"] .character-card[data-player="true"] .private-detail {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* Kertojan salaiset tapahtumat */
+.bible-subheading { margin: 14px 0 6px; font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.bible-card { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 0.86rem; line-height: 1.5; overflow-wrap: anywhere; }
+.bible-card p { margin: 4px 0; }
+.bible-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bible-card code { color: var(--text-muted); font-size: 0.75rem; }
+.bible-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--color-primary); color: var(--color-primary); font-size: 0.72rem; }
+.bible-state-revealed { opacity: 0.75; }
+.bible-meta { color: var(--text-muted); font-size: 0.78rem; }
+.bible-warning { color: var(--text-muted); font-size: 0.8rem; margin: 0 0 8px; }
+.bible-field { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; font-size: 0.78rem; color: var(--text-muted); }
+.bible-check { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; margin: 4px 0; }
+.bible-visible-to { border: 1px solid var(--border-color); border-radius: 6px; margin: 6px 0; padding: 4px 8px; font-size: 0.78rem; color: var(--text-muted); }

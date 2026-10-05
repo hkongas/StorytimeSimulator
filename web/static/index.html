@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,600&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=20261001-reading1">
+  <link rel="stylesheet" href="/static/style.css?v=20261005-progress1">
   <script src="/static/i18n.js?v=20260930-azure3"></script>
 </head>
 <body class="theme-dark">
@@ -141,9 +141,8 @@
           <div id="proseStream" class="prose-stream hidden"></div>
           <section id="turnProgress" class="turn-progress hidden" aria-label="Tarinan jatkon valmistuminen">
             <p id="submittedAction" class="submitted-action"></p>
-            <div class="agent-status-indicator"><span class="pulsing-dot"></span><span id="livePhaseText" role="status">Valmistellaan jatkoa...</span></div>
-            <div class="progress-connection"><span id="turnConnectionStatus">Yhdistetään...</span><span id="turnElapsed"></span></div>
-            <ul id="turnProgressLog" aria-live="polite"></ul>
+            <div class="agent-status-indicator"><span class="pulsing-dot"></span><span id="livePhaseText" role="status">Valmistellaan vuoroa...</span></div>
+            <div class="turn-progress-meta"><span id="turnElapsed" role="timer" aria-live="off"></span></div>
           </section>
 
         <!-- Dynaamiset Valintanapit (Interactive Choices) -->
@@ -318,6 +317,18 @@
               <button class="btn btn-primary btn-xs" onclick="saveNotesChanges()">Tallenna</button>
             </div>
           </div>
+
+          <div class="section-edit-header mt-4">
+            <h3 data-i18n="bibleHeading">🗝 Kertojan salaiset tapahtumat</h3>
+            <button id="editBibleBtn" class="btn btn-secondary btn-xs" onclick="startBibleEdit()">✎ Muokkaa</button>
+          </div>
+          <div id="bibleDisplay" class="bible-display"></div>
+          <div id="bibleEditor" class="bible-editor hidden"></div>
+
+          <h3 class="mt-4" data-i18n="plotThreadsHeading">🧵 Juonilangat</h3>
+          <div id="plotThreadsDisplay" class="notes-box"></div>
+          <h3 class="mt-4" data-i18n="worldFactsHeading">📌 Vahvistetut maailman faktat</h3>
+          <div id="worldFactsDisplay" class="notes-box"></div>
         </div>
       </div>
     </aside>
@@ -661,7 +672,7 @@
             </div>
             <div class="form-group">
               <label id="directorTokenLabel" for="settingDirectorMaxTokens">Vastausbudjetti</label>
-              <input type="number" id="settingDirectorMaxTokens" class="styled-input" min="500" max="128000" step="1" placeholder="32000" title="Vastauksen enimmäisbudjetti, ei tavoitepituus. Päättely voi kuluttaa samaa budjettia. Suurempi raja vähentää katkeamisriskiä; käyttämättömiä tokeneita ei yleensä laskuteta. Mallin oma vastausraja pätee." aria-description="Vastauksen enimmäisbudjetti sisältää mallista riippuen myös päättelyn. Käyttämätöntä budjettia ei yleensä laskuteta.">
+              <input type="number" id="settingDirectorMaxTokens" class="styled-input" min="500" max="128000" step="1" placeholder="128000" title="Vastauksen enimmäisbudjetti, ei tavoitepituus. Päättely voi kuluttaa samaa budjettia. Suurempi raja vähentää katkeamisriskiä; käyttämättömiä tokeneita ei yleensä laskuteta. Mallin oma vastausraja pätee." aria-description="Vastauksen enimmäisbudjetti sisältää mallista riippuen myös päättelyn. Käyttämätöntä budjettia ei yleensä laskuteta.">
             </div>
             <div class="form-group">
               <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
@@ -692,7 +703,7 @@
             </div>
             <div class="form-group">
               <label id="characterTokenLabel" for="settingCharMaxTokens">Vastausbudjetti</label>
-              <input type="number" id="settingCharMaxTokens" class="styled-input" min="200" max="64000" step="1" placeholder="16000" title="Vastauksen enimmäisbudjetti, ei tavoitepituus. Päättely voi kuluttaa samaa budjettia. Varaa päättelymallille enemmän tilaa; käyttämättömiä tokeneita ei yleensä laskuteta. Mallin oma vastausraja pätee." aria-description="Vastauksen enimmäisbudjetti sisältää mallista riippuen myös päättelyn. Käyttämätöntä budjettia ei yleensä laskuteta.">
+              <input type="number" id="settingCharMaxTokens" class="styled-input" min="200" max="64000" step="1" placeholder="64000" title="Vastauksen enimmäisbudjetti, ei tavoitepituus. Päättely voi kuluttaa samaa budjettia. Varaa päättelymallille enemmän tilaa; käyttämättömiä tokeneita ei yleensä laskuteta. Mallin oma vastausraja pätee." aria-description="Vastauksen enimmäisbudjetti sisältää mallista riippuen myös päättelyn. Käyttämätöntä budjettia ei yleensä laskuteta.">
             </div>
             <div class="form-group">
               <label data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
@@ -767,6 +778,7 @@
                 <th>Yhteensä</th>
                 <th>Hinta</th>
                 <th>Tila</th>
+                <th>Sisältö</th>
               </tr>
             </thead>
             <tbody id="debugLogsTableBody">
@@ -782,7 +794,8 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261001-reading1"></script>
-  <script src="/static/turns.js?v=20261001-reading1"></script>
+  <script src="/static/app.js?v=20261005-logexport2"></script>
+  <script src="/static/turns.js?v=20261005-progress1"></script>
+  <script src="/static/bible.js?v=20261005-bible1"></script>
 </body>
 </html>
