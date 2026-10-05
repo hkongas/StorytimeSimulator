@@ -28,7 +28,8 @@ class CharacterAgent:
         tone_profile: str = "default",
         custom_tone_override: Optional[str] = None,
         director_nudge: Optional[str] = None,
-        player_instruction: Optional[str] = None
+        player_instruction: Optional[str] = None,
+        nearby_characters: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Generoi hahmon aikeen: mitä hahmo yrittää/aikoo tehdä ja sisäisen monologin.
         
@@ -52,12 +53,13 @@ class CharacterAgent:
         past_memories: List[CharacterMemory] = await db.get_relevant_memories(
             story_id, self.character.id, f"{scene_location} {self.character.secret_motive}", limit=memory_limit
         )
+        recent_lines = {line.strip() for line in recent_prose_context.splitlines() if line.strip()}
+        past_memories = [memory for memory in past_memories if memory.content.strip() not in recent_lines]
         memory_text = "\n".join([f"- ({m.memory_type}): {m.content}" for m in past_memories]) if past_memories else "Ei vielä aiempia muistikuvia."
 
         system_prompt = prompt_loader.compose_system_prompt(
             prompt_name="character/decide_action",
-            tone_profile=tone_profile,
-            custom_tone_override=custom_tone_override,
+            include_tone=False,
             character_name=self.character.name,
             character_age=self.character.age,
             character_gender=self.character.gender or "Määrittelemätön",
@@ -71,15 +73,21 @@ class CharacterAgent:
             character_memories=memory_text
         )
 
-        user_content = "[YOUR PRIVATE CHARACTER PROFILE]\n" + json.dumps(self.character.model_dump(), ensure_ascii=False)
+        profile = self.character.model_dump(exclude={"created_at", "tier", "known_locations", "represents_group", "group_size_hint"})
+        user_content = "[YOUR PRIVATE CHARACTER PROFILE]\n" + json.dumps(profile, ensure_ascii=False)
+        relationships = await db.get_character_relationships(story_id, self.character.id)
+        if relationships:
+            user_content += "\n[RELATIONSHIPS YOU KNOW]\n" + json.dumps(relationships, ensure_ascii=False)
         user_content += "\n[YOUR RECALLED MEMORIES]\n" + memory_text
         user_content += f"""
 [CURRENT LOCATION]
 {scene_location}
 
-[YOUR VERIFIED OBSERVATIONS - NOT OMNISCIENT NARRATION]
+[RECENT EVENTS YOU PERCEIVED]
 {recent_prose_context[-3000:] if len(recent_prose_context) > 3000 else recent_prose_context}
 """
+        if nearby_characters:
+            user_content += "\n[NÄET NYT]\n" + ", ".join(nearby_characters)
         previous = await turn_store.get_last_intention(story_id, self.character.id)
         if previous:
             user_content += "\n[YOUR PREVIOUS PRIVATE THOUGHT AND ATTEMPT]\n" + json.dumps(previous, ensure_ascii=False)
@@ -99,7 +107,18 @@ class CharacterAgent:
         )
 
         # Hahmo EI enää päivitä omaa tilaansa — Kertoja tekee sen synthesize_turn_prose -kutsussa
-        return CharacterDecisionResponse.model_validate(result).model_dump()
+        decision = CharacterDecisionResponse.model_validate(result).model_dump()
+        decision["internal_monologue"] = decision["private_thought"] or decision["internal_monologue"]
+        if decision["action"]:
+            speech = f' "{decision["speech"]}"' if decision["speech"] else ""
+            decision["action_and_speech"] = decision["action"] + speech
+        decision["context_manifest"] = {
+            "event_ids": await db.get_witnessed_event_ids(story_id, self.character.id),
+            "fact_ids": [],
+            "memory_ids": [memory.id for memory in past_memories if memory.id is not None],
+            "truth_ids": []
+        }
+        return decision
 
     # Säilytetään vanha nimi aliasmäppäyksenä yhteensopivuuden vuoksi
     async def decide_action(self, *args, **kwargs) -> Dict[str, Any]:

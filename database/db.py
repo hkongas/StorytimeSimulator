@@ -1,7 +1,10 @@
 import json
 import asyncio
+import base64
+import gzip
 import shutil
 import sqlite3
+import re
 from contextlib import closing
 import aiosqlite
 from pathlib import Path
@@ -41,7 +44,9 @@ async def _initialize_story_db(story_id: str):
         schema_sql = f.read()
     required_tables = {"story_revision", "story_runtime", "turn_receipts", "turn_snapshots", "prose_edits",
                        "character_observations", "story_meta", "chronicle_entries", "characters",
-                       "character_memories", "scenes", "scene_turns", "api_calls"}
+                       "character_memories", "scenes", "scene_turns", "api_calls", "secret_truths",
+                       "clocks", "offscreen_agents", "locations", "items", "relationships", "events",
+                       "event_witnesses", "player_view_artifacts", "story_branches"}
     with closing(sqlite3.connect(":memory:")) as validation:
         validation.executescript(schema_sql)
         schema_tables = {row[0] for row in validation.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -52,14 +57,25 @@ async def _initialize_story_db(story_id: str):
     async with aiosqlite.connect(db_path) as db:
         async with db.execute("PRAGMA user_version") as cursor:
             version = (await cursor.fetchone())[0]
-        if version >= 5:
+        if version >= 8:
             async with db.execute("PRAGMA table_info(api_calls)") as cursor:
                 log_columns = {row[1] for row in await cursor.fetchall()}
+            async with db.execute("PRAGMA table_info(characters)") as cursor:
+                character_columns = {row[1] for row in await cursor.fetchall()}
+            async with db.execute("PRAGMA table_info(scene_turns)") as cursor:
+                turn_columns = {row[1] for row in await cursor.fetchall()}
+            async with db.execute("PRAGMA table_info(turn_snapshots)") as cursor:
+                snapshot_columns = {row[1] for row in await cursor.fetchall()}
+            async with db.execute("PRAGMA table_info(events)") as cursor:
+                event_columns = {row[1] for row in await cursor.fetchall()}
             async with db.execute("SELECT name FROM sqlite_master WHERE type = 'table'") as cursor:
                 existing_tables = {row[0] for row in await cursor.fetchall()}
-            if required_tables <= existing_tables and {"cached_tokens", "cost_known"} <= log_columns:
+            if (required_tables <= existing_tables and {"cached_tokens", "cost_known", "prompt_payload", "response_payload", "turn_index"} <= log_columns
+                    and {"location_id", "speech_style", "character_values", "current_goal", "fears", "skills", "limitations"} <= character_columns
+                    and "branch_id" in turn_columns and "branch_id" in snapshot_columns and "branch_id" in event_columns):
                 return
-        backup = db_path.with_suffix(".pre-v5.db" if version >= 4 else ".pre-v4.db")
+        backup_suffix = f".pre-v{version + 1}.db" if version >= 5 else ".pre-v5.db" if version == 4 else ".pre-v4.db"
+        backup = db_path.with_suffix(backup_suffix)
         async with db.execute("SELECT name FROM sqlite_master WHERE name = 'story_meta'") as cursor:
             existing = await cursor.fetchone()
         if existing and not backup.exists():
@@ -85,18 +101,35 @@ async def _initialize_story_db(story_id: str):
         await add_column_if_missing("characters", "last_active_turn", "INTEGER")
         await add_column_if_missing("characters", "represents_group", "TEXT")
         await add_column_if_missing("characters", "group_size_hint", "INTEGER")
+        await add_column_if_missing("characters", "location_id", "TEXT")
+        for column in ("speech_style", "character_values", "current_goal", "fears", "skills", "limitations"):
+            await add_column_if_missing("characters", column, "TEXT DEFAULT ''")
+        await add_column_if_missing("character_memories", "source_event_id", "TEXT")
+        await add_column_if_missing("character_memories", "last_accessed", "DATETIME")
+        await add_column_if_missing("character_memories", "created_at_turn", "INTEGER")
 
         await add_column_if_missing("scene_turns", "choices", "TEXT DEFAULT '[]'")
+        await add_column_if_missing("scene_turns", "branch_id", "TEXT NOT NULL DEFAULT 'main'")
+        await add_column_if_missing("turn_snapshots", "branch_id", "TEXT NOT NULL DEFAULT 'main'")
+        await add_column_if_missing("events", "branch_id", "TEXT NOT NULL DEFAULT 'main'")
         await add_column_if_missing("chronicle_entries", "repetition_flag", "BOOLEAN DEFAULT 0")
         await add_column_if_missing("api_calls", "cached_tokens", "INTEGER DEFAULT 0")
         await add_column_if_missing("api_calls", "cost_known", "BOOLEAN DEFAULT 0")
-        for table in ("story_meta", "characters", "character_memories", "scenes", "scene_turns", "story_runtime", "chronicle_entries"):
+        await add_column_if_missing("api_calls", "prompt_payload", "TEXT")
+        await add_column_if_missing("api_calls", "response_payload", "TEXT")
+        await add_column_if_missing("api_calls", "turn_index", "INTEGER")
+        for table in ("story_meta", "characters", "character_memories", "scenes", "scene_turns", "story_runtime", "chronicle_entries",
+                      "secret_truths", "clocks", "offscreen_agents", "locations", "items", "relationships", "events",
+                      "event_witnesses", "story_branches"):
             for operation in ("INSERT", "UPDATE", "DELETE"):
                 await db.execute(
                     f"CREATE TRIGGER IF NOT EXISTS revision_{table}_{operation.lower()} AFTER {operation} ON {table} BEGIN UPDATE story_revision SET revision = revision + 1 WHERE id = 1; END"
                 )
         await db.execute("CREATE INDEX IF NOT EXISTS memories_by_character ON character_memories(character_id, id)")
-        await db.execute(f"PRAGMA user_version = {max(version, 5)}")
+        await db.execute("CREATE INDEX IF NOT EXISTS events_by_turn ON events(turn_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS turns_by_branch ON scene_turns(branch_id, turn_index)")
+        await db.execute("CREATE INDEX IF NOT EXISTS snapshots_by_branch ON turn_snapshots(branch_id, turn_id)")
+        await db.execute(f"PRAGMA user_version = {max(version, 8)}")
         await db.commit()
 
 # --- Tarinan metatiedot ---
@@ -151,6 +184,143 @@ async def get_story_meta(story_id: str) -> Optional[StoryMeta]:
                 )
     return None
 
+
+async def get_story_bible(story_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        connection.row_factory = aiosqlite.Row
+        result = {}
+        for table in ("secret_truths", "clocks", "offscreen_agents"):
+            async with connection.execute(f"SELECT * FROM {table} ORDER BY id") as cursor:
+                rows = [dict(row) for row in await cursor.fetchall()]
+            if table == "offscreen_agents":
+                for row in rows:
+                    row["visible_to"] = json.loads(row["visible_to"] or "[]")
+            result[table] = rows
+    return result
+
+
+async def save_story_bible(story_id: str, truths: List[Dict[str, Any]],
+                               clocks: List[Dict[str, Any]], agents: List[Dict[str, Any]]):
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            for table in ("secret_truths", "clocks", "offscreen_agents"):
+                await connection.execute(f"DELETE FROM {table}")
+            for truth in truths:
+                if truth.get("reveal_state", "hidden") not in {"hidden", "hinted", "revealed"}:
+                    raise ValueError("Virheellinen salaisen totuuden tila.")
+                await connection.execute(
+                    "INSERT INTO secret_truths (id, fact, discoverable_via, reveal_state, revealed_at_turn, related_location_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (truth["id"], truth["fact"], truth.get("discoverable_via", ""),
+                     truth.get("reveal_state", "hidden"), truth.get("revealed_at_turn"),
+                     truth.get("related_location_id"))
+                )
+            for clock in clocks:
+                await connection.execute(
+                    "INSERT INTO clocks (id, description, remaining_beats, on_expire_effect, visible) VALUES (?, ?, ?, ?, ?)",
+                    (clock["id"], clock["description"], max(0, int(clock["remaining_beats"])),
+                     clock.get("on_expire_effect", ""), int(bool(clock.get("visible", False))))
+                )
+            for agent in agents:
+                await connection.execute(
+                    "INSERT INTO offscreen_agents (id, name, goal, progress, location, next_move, visible_to) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (agent["id"], agent["name"], agent["goal"], agent.get("progress", ""),
+                     agent.get("location", ""), agent.get("next_move", ""),
+                     json.dumps(agent.get("visible_to", []), ensure_ascii=False))
+                )
+            await connection.commit()
+        except BaseException:
+            await connection.rollback()
+            raise
+
+
+def location_identifier(name: str) -> str:
+    return re.sub(r"[^a-z0-9_-]+", "_", name.casefold()).strip("_")[:80] or "location"
+
+
+async def ensure_location(story_id: str, name: str, description: str = "") -> str:
+    location_id = location_identifier(name)
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        await connection.execute(
+            "INSERT OR IGNORE INTO locations (id, name, description) VALUES (?, ?, ?)",
+            (location_id, name, description)
+        )
+        await connection.commit()
+    return location_id
+
+
+async def get_item(story_id: str, item_id: str) -> Optional[Dict[str, Any]]:
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        connection.row_factory = aiosqlite.Row
+        async with connection.execute("SELECT * FROM items WHERE id = ?", (item_id,)) as cursor:
+            row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def location_exists(story_id: str, location_id: str) -> bool:
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        async with connection.execute("SELECT 1 FROM locations WHERE id = ?", (location_id,)) as cursor:
+            return await cursor.fetchone() is not None
+
+
+async def save_relationships(story_id: str, relationships: List[Dict[str, Any]]):
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        for relation in relationships:
+            await connection.execute(
+                """INSERT INTO relationships (character_a, character_b, attitude, trust, summary)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(character_a, character_b) DO UPDATE SET
+                   attitude = excluded.attitude, trust = excluded.trust, summary = excluded.summary""",
+                (relation["character_a"], relation["character_b"], relation.get("attitude", ""),
+                 relation.get("trust", 0), relation.get("summary", ""))
+            )
+        await connection.commit()
+
+
+async def save_items(story_id: str, items: List[Dict[str, Any]]):
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        for item in items:
+            await connection.execute(
+                "INSERT INTO items (id, name, holder_character_id, location_id, state) VALUES (?, ?, ?, ?, ?)",
+                (item["id"], item["name"], item.get("holder_character_id"),
+                 item.get("location_id"), item.get("state", ""))
+            )
+        await connection.commit()
+
+
+async def get_character_relationships(story_id: str, character_id: str) -> List[Dict[str, Any]]:
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        connection.row_factory = aiosqlite.Row
+        async with connection.execute(
+            """SELECT r.character_a, a.name AS name_a, r.character_b, b.name AS name_b,
+                      r.attitude, r.trust, r.summary
+               FROM relationships r
+               JOIN characters a ON a.id = r.character_a
+               JOIN characters b ON b.id = r.character_b
+               WHERE r.character_a = ? OR r.character_b = ?
+               ORDER BY r.character_a, r.character_b""",
+            (character_id, character_id)
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def relationship_exists(story_id: str, character_a: str, character_b: str) -> bool:
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        async with connection.execute(
+            "SELECT 1 FROM relationships WHERE character_a = ? AND character_b = ?",
+            (character_a, character_b)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
 async def delete_story(story_id: str) -> bool:
     """Poistaa tarinan ja sen kansion kokonaan."""
     story_dir = get_story_dir(story_id)
@@ -197,15 +367,16 @@ async def save_character(story_id: str, char: Character):
         await db.execute(
             """
             INSERT OR REPLACE INTO characters 
-            (id, name, age, gender, appearance, personality, is_player_controlled, physical_state, mental_state, secret_motive, public_bio, status, tier, known_locations, last_active_turn, represents_group, group_size_hint)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, name, age, gender, appearance, personality, speech_style, character_values, current_goal, fears, skills, limitations, is_player_controlled, physical_state, mental_state, secret_motive, public_bio, status, tier, known_locations, last_active_turn, represents_group, group_size_hint, location_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 char.id, char.name, char.age, char.gender, char.appearance, char.personality,
+                char.speech_style, char.values, char.current_goal, char.fears, char.skills, char.limitations,
                 1 if char.is_player_controlled else 0,
                 char.physical_state, char.mental_state, char.secret_motive, char.public_bio,
                 char.status, char.tier, json.dumps(char.known_locations), char.last_active_turn,
-                char.represents_group, char.group_size_hint
+                char.represents_group, char.group_size_hint, char.location_id
             )
         )
         await db.commit()
@@ -227,6 +398,12 @@ async def get_character(story_id: str, char_id: str) -> Optional[Character]:
                     gender=row["gender"],
                     appearance=row["appearance"],
                     personality=row["personality"],
+                    speech_style=row["speech_style"] if "speech_style" in row_keys else "",
+                    values=row["character_values"] if "character_values" in row_keys else "",
+                    current_goal=row["current_goal"] if "current_goal" in row_keys else "",
+                    fears=row["fears"] if "fears" in row_keys else "",
+                    skills=row["skills"] if "skills" in row_keys else "",
+                    limitations=row["limitations"] if "limitations" in row_keys else "",
                     is_player_controlled=bool(row["is_player_controlled"]),
                     physical_state=row["physical_state"],
                     mental_state=row["mental_state"],
@@ -238,6 +415,7 @@ async def get_character(story_id: str, char_id: str) -> Optional[Character]:
                     last_active_turn=row["last_active_turn"] if "last_active_turn" in row_keys else None,
                     represents_group=row["represents_group"] if "represents_group" in row_keys else None,
                     group_size_hint=row["group_size_hint"] if "group_size_hint" in row_keys else None,
+                    location_id=row["location_id"] if "location_id" in row_keys else None,
                     created_at=str(row["created_at"])
                 )
     return None
@@ -261,6 +439,12 @@ async def get_all_characters(story_id: str, include_archived: bool = True) -> Li
                     gender=row["gender"],
                     appearance=row["appearance"],
                     personality=row["personality"],
+                    speech_style=row["speech_style"] if "speech_style" in row_keys else "",
+                    values=row["character_values"] if "character_values" in row_keys else "",
+                    current_goal=row["current_goal"] if "current_goal" in row_keys else "",
+                    fears=row["fears"] if "fears" in row_keys else "",
+                    skills=row["skills"] if "skills" in row_keys else "",
+                    limitations=row["limitations"] if "limitations" in row_keys else "",
                     is_player_controlled=bool(row["is_player_controlled"]),
                     physical_state=row["physical_state"],
                     mental_state=row["mental_state"],
@@ -272,6 +456,7 @@ async def get_all_characters(story_id: str, include_archived: bool = True) -> Li
                     last_active_turn=row["last_active_turn"] if "last_active_turn" in row_keys else None,
                     represents_group=row["represents_group"] if "represents_group" in row_keys else None,
                     group_size_hint=row["group_size_hint"] if "group_size_hint" in row_keys else None,
+                    location_id=row["location_id"] if "location_id" in row_keys else None,
                     created_at=str(row["created_at"])
                 ))
     return characters
@@ -341,19 +526,31 @@ async def add_character_memory(story_id: str, memory: CharacterMemory):
         await db.commit()
 
 async def get_relevant_memories(story_id: str, char_id: str, query: str, limit: int = 20) -> List[CharacterMemory]:
-    recent = await get_character_memories(story_id, char_id, limit=max(1, limit // 2))
-    terms = list(dict.fromkeys(word.casefold().strip(".,!?;:") for word in query.split() if len(word) > 3))[:8]
-    conditions = " OR ".join("LOWER(content) LIKE ?" for term in terms) or "0"
-    recent_ids = [memory.id for memory in recent]
-    exclusion = f"AND id NOT IN ({', '.join('?' for identifier in recent_ids)})" if recent_ids else ""
+    await init_story_db(story_id)
+    terms = sorted({word.casefold().strip(".,!?;:") for word in query.split() if len(word) > 3})
     async with aiosqlite.connect(get_db_path(story_id)) as connection:
         connection.row_factory = aiosqlite.Row
         async with connection.execute(
-            f"SELECT * FROM character_memories WHERE character_id = ? AND (importance_score > 1 OR {conditions}) {exclusion} ORDER BY importance_score DESC, id DESC LIMIT ?",
-            (char_id, *(f"%{term}%" for term in terms), *recent_ids, limit - len(recent))
+            "SELECT * FROM character_memories WHERE character_id = ? ORDER BY id ASC", (char_id,)
         ) as cursor:
-            recalled = [CharacterMemory.model_validate(dict(row)) for row in await cursor.fetchall()]
-    return sorted(recent + recalled, key=lambda memory: memory.id or 0)
+            rows = await cursor.fetchall()
+    memories = [CharacterMemory.model_validate(dict(row)) for row in rows]
+    if not memories:
+        return []
+    newest_id = max(memory.id or 0 for memory in memories)
+    scored = []
+    for memory in memories:
+        content = memory.content.casefold()
+        overlap = sum(term in content for term in terms)
+        recency = (memory.id or 0) / max(newest_id, 1)
+        importance = float(memory.importance_score or 1.0)
+        score = recency + importance * 0.15 + overlap * 2.0
+        scored.append((score, memory.id or 0, memory))
+    selected = {memory.id: memory for _, _, memory in sorted(scored, key=lambda item: (-item[0], item[1]))[:max(1, limit)]}
+    for _, _, memory in scored:
+        if memory.importance_score >= 8:
+            selected[memory.id] = memory
+    return sorted(selected.values(), key=lambda memory: memory.id or 0)
 
 
 async def get_character_memories(story_id: str, char_id: str, limit: int = 25) -> List[CharacterMemory]:
@@ -379,6 +576,22 @@ async def get_character_memories(story_id: str, char_id: str, limit: int = 25) -
                     created_at=str(row["created_at"])
                 ))
     return memories
+
+
+async def get_witnessed_event_ids(story_id: str, char_id: str, limit: int = 20) -> List[str]:
+    await init_story_db(story_id)
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        async with connection.execute(
+            """SELECT e.id FROM events e JOIN event_witnesses w ON w.event_id = e.id
+               WHERE w.character_id = ?
+                 AND COALESCE(e.turn_id, 0) = (SELECT MAX(COALESCE(e2.turn_id, 0))
+                    FROM events e2 JOIN event_witnesses w2 ON w2.event_id = e2.id
+                    WHERE w2.character_id = ?)
+               ORDER BY e.id LIMIT ?""",
+            (char_id, char_id, limit)
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [row[0] for row in rows]
 
 async def update_scene_active_characters(story_id: str, scene_id: int, character_ids: List[str]):
     db_path = get_db_path(story_id)
@@ -529,13 +742,13 @@ async def add_scene_turn(story_id: str, turn: SceneTurn) -> int:
         await db.commit()
         return cursor.lastrowid
 
-async def get_scene_turns(story_id: str, scene_id: int) -> List[SceneTurn]:
+async def get_scene_turns(story_id: str, scene_id: int, branch_id: str = "main") -> List[SceneTurn]:
     db_path = get_db_path(story_id)
     await init_story_db(story_id)
     turns = []
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM scene_turns WHERE scene_id = ? ORDER BY turn_index ASC", (scene_id,)) as cursor:
+        async with db.execute("SELECT * FROM scene_turns WHERE scene_id = ? AND branch_id = ? ORDER BY turn_index ASC", (scene_id, branch_id)) as cursor:
             rows = await cursor.fetchall()
             for row in rows:
                 row_keys = row.keys()
@@ -555,13 +768,13 @@ async def get_scene_turns(story_id: str, scene_id: int) -> List[SceneTurn]:
                 ))
     return turns
 
-async def get_all_story_turns(story_id: str) -> List[SceneTurn]:
+async def get_all_story_turns(story_id: str, branch_id: str = "main") -> List[SceneTurn]:
     db_path = get_db_path(story_id)
     await init_story_db(story_id)
     turns = []
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM scene_turns ORDER BY id ASC") as cursor:
+        async with db.execute("SELECT * FROM scene_turns WHERE branch_id = ? ORDER BY id ASC", (branch_id,)) as cursor:
             rows = await cursor.fetchall()
             for row in rows:
                 row_keys = row.keys()
@@ -632,21 +845,35 @@ async def log_api_call(
     status: str = "success",
     error_message: str = "",
     cached_tokens: int = 0,
-    cost_known: bool = False
+    cost_known: bool = False,
+    prompt_data: Any = None,
+    response_data: Any = None
 ):
     """Kirjaa tehdyn LLM-kutsun tiedot ja keston tietokantaan."""
     if not story_id:
         return
     db_path = get_db_path(story_id)
     await init_story_db(story_id)
+    def pack(value):
+        if value is None or not settings.LLM_CALL_CONTENT_LOGGING:
+            return None
+        content = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
+        return "gzip:" + base64.b64encode(gzip.compress(content)).decode("ascii")
+
     async with aiosqlite.connect(db_path) as db:
+        async with db.execute("SELECT COALESCE(MAX(turn_index), 0) + 1 FROM scene_turns") as cursor:
+            turn_index = (await cursor.fetchone())[0]
         await db.execute(
             """
-            INSERT INTO api_calls (story_id, role, model, duration_seconds, prompt_tokens, completion_tokens, reasoning_tokens, total_tokens, cost_usd, status, error_message, cached_tokens, cost_known)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO api_calls (story_id, role, model, duration_seconds, prompt_tokens, completion_tokens, reasoning_tokens, total_tokens, cost_usd, status, error_message, cached_tokens, cost_known, prompt_payload, response_payload, turn_index)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (story_id, role, model, duration_seconds, prompt_tokens, completion_tokens, reasoning_tokens, total_tokens, cost_usd, status, error_message, cached_tokens, cost_known)
+            (story_id, role, model, duration_seconds, prompt_tokens, completion_tokens, reasoning_tokens, total_tokens, cost_usd,
+             status, error_message, cached_tokens, cost_known, pack(prompt_data), pack(response_data), turn_index)
         )
+        if settings.LLM_CALL_RETENTION_DAYS > 0:
+            await db.execute("DELETE FROM api_calls WHERE created_at < datetime('now', ?)",
+                             (f"-{settings.LLM_CALL_RETENTION_DAYS} days",))
         await db.commit()
 
 async def get_api_calls_for_story(story_id: str, limit: int = 60) -> List[Dict[str, Any]]:

@@ -146,7 +146,7 @@ class LLMClient:
                     cached_tokens=u.get("cached_tokens", 0),
                     cost_known=u.get("cost_known", False),
                     status=u.get("status", "success"),
-                    error_message=""
+                    error_message="", prompt_data=messages, response_data=content
                 )
             return content
         except Exception as e:
@@ -163,7 +163,7 @@ class LLMClient:
                     total_tokens=0,
                     cost_usd=0.0,
                     status="error",
-                    error_message=str(e)[:500]
+                    error_message=str(e)[:500], prompt_data=messages
                 )
             raise
 
@@ -223,7 +223,8 @@ class LLMClient:
                         cached_tokens=u.get("cached_tokens", 0),
                         cost_known=u.get("cost_known", False),
                         status=u.get("status", "success"),
-                        error_message=""
+                        error_message="", prompt_data={"messages": messages, "json_schema": json_schema},
+                        response_data=res
                     )
                 return res
             except TruncatedResponseError as tre:
@@ -245,7 +246,8 @@ class LLMClient:
                         status="truncated",
                         cached_tokens=u.get("cached_tokens", 0),
                         cost_known=u.get("cost_known", False),
-                        error_message=str(tre)[:500]
+                        error_message=str(tre)[:500],
+                        prompt_data={"messages": messages, "json_schema": json_schema}
                     )
                 if attempt < attempts:
                     # Korotetaan token-budjettia merkittävästi toiselle yritykselle
@@ -264,7 +266,8 @@ class LLMClient:
                     await db.log_api_call(sid, role, target_model, usage.get("duration_seconds", 0.0),
                         prompt_tokens=usage.get("prompt_tokens", 0), completion_tokens=usage.get("completion_tokens", 0),
                         total_tokens=usage.get("total_tokens", 0), cached_tokens=usage.get("cached_tokens", 0),
-                        status="error", error_message=str(ve)[:500])
+                        status="error", error_message=str(ve)[:500],
+                        prompt_data={"messages": messages, "json_schema": json_schema})
                 if attempt < attempts:
                     logger.info("Yritetään uudelleen JSON-kutsulla...")
                     continue
@@ -273,7 +276,8 @@ class LLMClient:
             except Exception as error:
                 if sid:
                     await db.log_api_call(sid, role, target_model, provider.last_usage.get("duration_seconds", 0.0),
-                                          status="error", error_message=str(error)[:500])
+                                          status="error", error_message=str(error)[:500],
+                                          prompt_data={"messages": messages, "json_schema": json_schema})
                 raise
 
     async def stream_completion(
