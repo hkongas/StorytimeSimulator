@@ -4,6 +4,7 @@ import base64
 import gzip
 import shutil
 import sqlite3
+import logging
 import re
 from contextlib import closing
 import aiosqlite
@@ -13,7 +14,8 @@ from config import settings
 from core.types import StoryMeta, Character, CharacterMemory, Scene, SceneTurn, ChronicleEntry
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
-_migration_locks: Dict[Path, asyncio.Lock] = {}
+_initialization_locks: Dict[Path, asyncio.Lock] = {}
+logger = logging.getLogger("uvicorn.error.tarinamoottori.database")
 
 def get_story_dir(story_id: str) -> Path:
     if not story_id or len(story_id) > 100 or not all(
@@ -32,14 +34,13 @@ def get_db_path(story_id: str) -> Path:
 
 async def init_story_db(story_id: str):
     path = get_db_path(story_id)
-    async with _migration_locks.setdefault(path, asyncio.Lock()):
+    async with _initialization_locks.setdefault(path, asyncio.Lock()):
         await _initialize_story_db(story_id)
 
 
 async def _initialize_story_db(story_id: str):
-    """Alustaa tarinaprojektin SQLite-tietokannan, taulut ja suorittaa automaattiset sarakemigraatiot."""
+    """Creates the current development schema without migrating older databases."""
     db_path = get_db_path(story_id)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         schema_sql = f.read()
     required_tables = {"story_revision", "story_runtime", "turn_receipts", "turn_snapshots", "prose_edits",
@@ -50,74 +51,28 @@ async def _initialize_story_db(story_id: str):
     with closing(sqlite3.connect(":memory:")) as validation:
         validation.executescript(schema_sql)
         schema_tables = {row[0] for row in validation.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        required_columns = {table: {row[1] for row in validation.execute(f"PRAGMA table_info({table})")}
+                            for table in required_tables}
     if not required_tables <= schema_tables:
         missing = ", ".join(sorted(required_tables - schema_tables))
         raise ValueError(f"Tietokannan skeematiedosto on puutteellinen: {missing}. Tarkista schema.sql ja pilvisynkronointi.")
 
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(db_path) as db:
-        async with db.execute("PRAGMA user_version") as cursor:
-            version = (await cursor.fetchone())[0]
-        if version >= 8:
-            async with db.execute("PRAGMA table_info(api_calls)") as cursor:
-                log_columns = {row[1] for row in await cursor.fetchall()}
-            async with db.execute("PRAGMA table_info(characters)") as cursor:
-                character_columns = {row[1] for row in await cursor.fetchall()}
-            async with db.execute("PRAGMA table_info(scene_turns)") as cursor:
-                turn_columns = {row[1] for row in await cursor.fetchall()}
-            async with db.execute("PRAGMA table_info(turn_snapshots)") as cursor:
-                snapshot_columns = {row[1] for row in await cursor.fetchall()}
-            async with db.execute("PRAGMA table_info(events)") as cursor:
-                event_columns = {row[1] for row in await cursor.fetchall()}
-            async with db.execute("SELECT name FROM sqlite_master WHERE type = 'table'") as cursor:
-                existing_tables = {row[0] for row in await cursor.fetchall()}
-            if (required_tables <= existing_tables and {"cached_tokens", "cost_known", "prompt_payload", "response_payload", "turn_index"} <= log_columns
-                    and {"location_id", "speech_style", "character_values", "current_goal", "fears", "skills", "limitations"} <= character_columns
-                    and "branch_id" in turn_columns and "branch_id" in snapshot_columns and "branch_id" in event_columns):
-                return
-        backup_suffix = f".pre-v{version + 1}.db" if version >= 5 else ".pre-v5.db" if version == 4 else ".pre-v4.db"
-        backup = db_path.with_suffix(backup_suffix)
-        async with db.execute("SELECT name FROM sqlite_master WHERE name = 'story_meta'") as cursor:
-            existing = await cursor.fetchone()
-        if existing and not backup.exists():
-            async with aiosqlite.connect(backup) as destination:
-                await db.backup(destination)
+        async with db.execute("SELECT name FROM sqlite_master WHERE type = 'table'") as cursor:
+            existing_tables = {row[0] for row in await cursor.fetchall()}
+        if existing_tables:
+            async with db.execute("PRAGMA user_version") as cursor:
+                version = (await cursor.fetchone())[0]
+            if version != 9 or not required_tables <= existing_tables:
+                raise ValueError("Tarinan tietokanta ei vastaa nykyista kehitysversiota. Luo tarina uudelleen; migraatioita ei tueta.")
+            for table, columns in required_columns.items():
+                async with db.execute(f"PRAGMA table_info({table})") as cursor:
+                    actual = {row[1] for row in await cursor.fetchall()}
+                if actual != columns:
+                    raise ValueError("Tarinan tietokannan rakenne on vanhentunut tai puutteellinen. Luo tarina uudelleen.")
+            return
         await db.executescript("BEGIN IMMEDIATE;\n" + schema_sql)
-
-        # Migraatiotarkistukset olemassa oleville tauluille
-        async def add_column_if_missing(table: str, column: str, col_type: str):
-            async with db.execute(f"PRAGMA table_info({table})") as cursor:
-                columns = {row[1] for row in await cursor.fetchall()}
-            if column not in columns:
-                await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-
-        await add_column_if_missing("story_meta", "tone_profile", "TEXT DEFAULT 'default'")
-        await add_column_if_missing("story_meta", "custom_tone_override", "TEXT DEFAULT ''")
-        await add_column_if_missing("story_meta", "language", "TEXT DEFAULT 'fi'")
-        await add_column_if_missing("story_meta", "theme_color", "TEXT DEFAULT ''")
-
-        await add_column_if_missing("characters", "status", "TEXT DEFAULT 'active'")
-        await add_column_if_missing("characters", "tier", "TEXT DEFAULT 'major'")
-        await add_column_if_missing("characters", "known_locations", "TEXT DEFAULT '[]'")
-        await add_column_if_missing("characters", "last_active_turn", "INTEGER")
-        await add_column_if_missing("characters", "represents_group", "TEXT")
-        await add_column_if_missing("characters", "group_size_hint", "INTEGER")
-        await add_column_if_missing("characters", "location_id", "TEXT")
-        for column in ("speech_style", "character_values", "current_goal", "fears", "skills", "limitations"):
-            await add_column_if_missing("characters", column, "TEXT DEFAULT ''")
-        await add_column_if_missing("character_memories", "source_event_id", "TEXT")
-        await add_column_if_missing("character_memories", "last_accessed", "DATETIME")
-        await add_column_if_missing("character_memories", "created_at_turn", "INTEGER")
-
-        await add_column_if_missing("scene_turns", "choices", "TEXT DEFAULT '[]'")
-        await add_column_if_missing("scene_turns", "branch_id", "TEXT NOT NULL DEFAULT 'main'")
-        await add_column_if_missing("turn_snapshots", "branch_id", "TEXT NOT NULL DEFAULT 'main'")
-        await add_column_if_missing("events", "branch_id", "TEXT NOT NULL DEFAULT 'main'")
-        await add_column_if_missing("chronicle_entries", "repetition_flag", "BOOLEAN DEFAULT 0")
-        await add_column_if_missing("api_calls", "cached_tokens", "INTEGER DEFAULT 0")
-        await add_column_if_missing("api_calls", "cost_known", "BOOLEAN DEFAULT 0")
-        await add_column_if_missing("api_calls", "prompt_payload", "TEXT")
-        await add_column_if_missing("api_calls", "response_payload", "TEXT")
-        await add_column_if_missing("api_calls", "turn_index", "INTEGER")
         for table in ("story_meta", "characters", "character_memories", "scenes", "scene_turns", "story_runtime", "chronicle_entries",
                       "secret_truths", "clocks", "offscreen_agents", "locations", "items", "relationships", "events",
                       "event_witnesses", "story_branches"):
@@ -129,7 +84,7 @@ async def _initialize_story_db(story_id: str):
         await db.execute("CREATE INDEX IF NOT EXISTS events_by_turn ON events(turn_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS turns_by_branch ON scene_turns(branch_id, turn_index)")
         await db.execute("CREATE INDEX IF NOT EXISTS snapshots_by_branch ON turn_snapshots(branch_id, turn_id)")
-        await db.execute(f"PRAGMA user_version = {max(version, 8)}")
+        await db.execute("PRAGMA user_version = 9")
         await db.commit()
 
 # --- Tarinan metatiedot ---
@@ -359,7 +314,11 @@ async def list_all_stories() -> List[Dict[str, Any]]:
 
     for item in settings.STORIES_DIR.iterdir():
         if item.is_dir() and (item / "story.db").exists():
-            meta = await get_story_meta(item.name)
+            try:
+                meta = await get_story_meta(item.name)
+            except (ValueError, sqlite3.DatabaseError) as error:
+                logger.warning("Tarina ohitettiin listauksessa: id=%s reason=%s", item.name, error)
+                continue
             if meta:
                 stories.append({
                     "id": meta.id,

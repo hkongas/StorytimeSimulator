@@ -175,6 +175,92 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         settings.BASE_DIR = self.original_base
         self.temporary.cleanup()
 
+    async def test_quick_story_creates_named_story_and_honors_options(self):
+        from database import db
+        from unittest.mock import patch
+
+        original = engine.llm.json_completion
+
+        async def with_world_state(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "story_initialization":
+                result["initial_relationships"] = [{"character_a": "char_eerik", "character_b": "char_mira",
+                    "attitude": "Curious", "trust": 0.25, "summary": "Old acquaintances"}]
+                result["initial_items"] = [{"id": "letter", "name": "Letter", "holder_character_id": "char_mira"},
+                                           {"id": "table", "name": "Table", "location_id": result["initial_scene"]["location"]}]
+            return result
+
+        with patch.object(engine.llm, "json_completion", side_effect=with_world_state):
+            response = await self.client.post("/api/stories/quick", json={
+                "description": "Haluan pelata rauhallista kahvilatarinaa.",
+                "mode": "roleplay", "style": "Arkinen draama", "tone_profile": "default"
+            })
+        self.assertEqual(response.status_code, 200, response.text)
+        created = response.json()["data"]
+        self.assertEqual(created["meta"]["title"], "Mallin nimeama tarina")
+        self.assertEqual(created["meta"]["genre"], "Arkinen draama")
+        self.assertEqual(created["mode"], "roleplay")
+        self.assertTrue(any(character["is_player_controlled"] for character in created["characters"]))
+        story_id = created["story_id"]
+        relationships = await db.get_character_relationships(story_id, "char_eerik")
+        self.assertEqual(len(relationships), 1)
+        self.assertEqual(relationships[0]["trust"], 0.25)
+        self.assertEqual((await db.get_item(story_id, "letter"))["holder_character_id"], "char_mira")
+        self.assertEqual((await db.get_item(story_id, "table"))["location_id"],
+                 db.location_identifier(created["scene"]["location"]))
+
+    async def test_quick_story_rejects_blank_description_and_unknown_tone(self):
+        for payload in ({"description": "   "}, {"description": "Kahvila", "tone_profile": "missing"}):
+            response = await self.client.post("/api/stories/quick", json=payload)
+            self.assertEqual(response.status_code, 400)
+        self.assertEqual(list(settings.STORIES_DIR.iterdir()), [])
+
+    async def test_quick_story_accepts_description_only(self):
+        response = await self.client.post("/api/stories/quick", json={"description": "Kahvila avaruudessa"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["mode"], "novel")
+        self.assertEqual(response.json()["data"]["meta"]["title"], "Mallin nimeama tarina")
+
+    async def test_quick_story_model_failure_does_not_create_directory(self):
+        from unittest.mock import AsyncMock, patch
+        with patch.object(engine.llm, "json_completion", new=AsyncMock(side_effect=ValueError("Invalid response"))):
+            response = await self.client.post("/api/stories/quick", json={"description": "Kahvila"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(list(settings.STORIES_DIR.iterdir()), [])
+
+    async def test_quick_story_unknown_item_location_is_logged_and_rejected(self):
+        from unittest.mock import patch
+        original = engine.llm.json_completion
+
+        async def invalid_location(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "story_initialization":
+                result["initial_items"] = [{"id": "table", "name": "Table", "location_id": "unknown_place"}]
+            return result
+
+        with self.assertLogs("uvicorn.error.tarinamoottori.api", level="INFO") as captured:
+            with patch.object(engine.llm, "json_completion", side_effect=invalid_location):
+                response = await self.client.post("/api/stories/quick", json={"description": "Kahvila"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Aloitusväline viittaa tuntemattomaan paikkaan", response.json()["detail"])
+        self.assertIn("Pikaluonti epäonnistui", "\n".join(captured.output))
+        self.assertEqual(list(settings.STORIES_DIR.iterdir()), [])
+
+    async def test_story_list_survives_legacy_database(self):
+        import aiosqlite
+        from database import db
+        from core.types import StoryMeta
+
+        await db.save_story_meta("old", StoryMeta(id="old", title="Old story"))
+        async with aiosqlite.connect(db.get_db_path("old")) as connection:
+            await connection.execute("PRAGMA user_version = 8")
+        await db.save_story_meta("new", StoryMeta(id="new", title="New story"))
+        with self.assertLogs("uvicorn.error.tarinamoottori.database", level="WARNING"):
+            response = await self.client.get("/api/stories")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([story["id"] for story in response.json()["stories"]], ["new"])
+        self.assertTrue(db.get_db_path("old").exists())
+
     async def test_api_log_content_endpoint(self):
         from database import db
         from unittest.mock import patch

@@ -127,7 +127,7 @@ async def get_player_view_retry_context(story_id: str, turn_id: int, character_i
     await db.init_story_db(story_id)
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
         async with connection.execute(
-            """SELECT p.status, r.payload_json, s.request_id, sc.location
+            """SELECT p.status, r.payload_json, s.request_id, sc.location, s.after_json
                FROM player_view_artifacts p
                JOIN turn_snapshots s ON s.turn_id = p.turn_id
                JOIN turn_receipts r ON r.request_id = s.request_id
@@ -142,8 +142,30 @@ async def get_player_view_retry_context(story_id: str, turn_id: int, character_i
     if row[0] not in {"view_failed", "view_pending"}:
         raise ValueError("Näkökulma on jo valmis.")
     payload = json.loads(row[1])
-    return {"status": row[0], "request_id": row[2], "location": row[3],
-            "outcome": payload["outcome"], "audit": payload.get("audit", {})}
+    snapshot = _decode_snapshot(row[4])
+    character = next((item for item in snapshot.get("characters", []) if item["id"] == character_id), None)
+    if character:
+        character = dict(character)
+        character["values"] = character.pop("character_values", "")
+        character["known_locations"] = json.loads(character.get("known_locations") or "[]")
+    return {"status": row[0], "request_id": row[2],
+            "location": payload["outcome"].get("scene_location") or row[3], "character": character,
+            "outcome": payload["outcome"], "audit": payload.get("audit", {}),
+            "runtime": json.loads(snapshot["story_runtime"][0]["state_json"]) if snapshot.get("story_runtime") else {}}
+
+
+async def get_viewpoint_snapshot(story_id: str, turn_id: int, character_id: str) -> dict:
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute("SELECT after_json FROM turn_snapshots WHERE turn_id = ?", (turn_id,)) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return {}
+    state = _decode_snapshot(row[0])
+    return {
+        "memories": [item for item in state.get("character_memories", []) if item["character_id"] == character_id],
+        "observation": next((item["content"] for item in state.get("character_observations", [])
+                             if item["character_id"] == character_id), "Ei uusia havaintoja.")
+    }
 
 
 async def get_last_intention(story_id: str, character_id: str) -> dict:
@@ -233,13 +255,10 @@ async def save_initial_events(story_id: str, turn_id: int, events: list):
                 "INSERT OR IGNORE INTO events (id, turn_id, description, derived_from, actor_id) VALUES (?, ?, ?, ?, ?)",
                 (event.id, turn_id, event.description, event.derived_from, event.actor_id)
             )
-            details = {detail.character_id: detail for detail in event.witness_details}
-            for witness in event.witnesses:
-                detail = details.get(witness)
+            for observation in event.observations:
                 await connection.execute(
-                    "INSERT OR IGNORE INTO event_witnesses (event_id, character_id, detail, modality, perceived_text) VALUES (?, ?, ?, ?, ?)",
-                    (event.id, witness, (detail.detail or event.description) if detail else event.description,
-                     detail.modality if detail else "saw", detail.perceived_text if detail else None)
+                    "INSERT OR IGNORE INTO event_witnesses (event_id, character_id, detail, modality) VALUES (?, ?, ?, ?)",
+                    (event.id, observation.character_id, observation.text, observation.modality)
                 )
         await connection.commit()
 
@@ -304,11 +323,7 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                     tuple(values.values())
                 )
                 observed_events = [event for event in outcome.events if character.id in event.witnesses]
-                details = {detail.character_id: detail for event in observed_events for detail in event.witness_details}
-                observations = [
-                    (details[event.id].perceived_text or details[event.id].detail or event.description)
-                    if event.id in details else event.description for event in observed_events
-                ]
+                observations = [event.observation_for(character.id) for event in observed_events]
                 await connection.execute(
                     "INSERT INTO character_observations VALUES (?, ?) ON CONFLICT(character_id) DO UPDATE SET content = excluded.content",
                     (character.id, "\n".join(observations) or "Ei uusia havaintoja.")
@@ -351,13 +366,10 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                     "INSERT OR IGNORE INTO events (id, turn_id, description, derived_from, actor_id) VALUES (?, ?, ?, ?, ?)",
                     (event.id, turn_id, event.description, event.derived_from, event.actor_id)
                 )
-                details = {detail.character_id: detail for detail in event.witness_details}
-                for witness in event.witnesses:
-                    detail = details.get(witness)
+                for observation in event.observations:
                     await connection.execute(
-                        "INSERT OR IGNORE INTO event_witnesses (event_id, character_id, detail, modality, perceived_text) VALUES (?, ?, ?, ?, ?)",
-                        (event.id, witness, (detail.detail or event.description) if detail else event.description,
-                         detail.modality if detail else "saw", detail.perceived_text if detail else None)
+                        "INSERT OR IGNORE INTO event_witnesses (event_id, character_id, detail, modality) VALUES (?, ?, ?, ?)",
+                        (event.id, observation.character_id, observation.text, observation.modality)
                     )
             for reveal in plan.get("reveals", []):
                 async with connection.execute("SELECT reveal_state FROM secret_truths WHERE id = ?", (reveal["truth_id"],)) as cursor:
@@ -368,6 +380,11 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                         "UPDATE secret_truths SET reveal_state = ?, revealed_at_turn = CASE WHEN ? = 'revealed' THEN ? ELSE revealed_at_turn END WHERE id = ?",
                         (next_state, next_state, turn.turn_index, reveal["truth_id"])
                     )
+            for access in outcome.truth_access_updates:
+                await connection.execute(
+                    "UPDATE secret_truths SET discoverable_via = ?, related_location_id = ? WHERE id = ?",
+                    (access.discoverable_via, access.related_location_id, access.truth_id)
+                )
             ticks = {}
             for item in plan.get("clock_ticks", []):
                 ticks[item["clock_id"]] = ticks.get(item["clock_id"], 0) + item.get("amount", 1)
@@ -383,7 +400,23 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                     "UPDATE offscreen_agents SET progress = ?, next_move = '' WHERE id = ?",
                     (move, agent_id)
                 )
-            for change in plan.get("state_changes", []):
+            for additions in (plan.get("bible_additions", {}), outcome.bible_additions.model_dump()):
+                for truth in additions.get("secret_truths", []):
+                    await connection.execute(
+                        "INSERT INTO secret_truths (id, fact, discoverable_via, reveal_state, related_location_id) VALUES (?, ?, ?, ?, ?)",
+                        (truth["id"], truth["fact"], truth["discoverable_via"], truth["reveal_state"], truth["related_location_id"])
+                    )
+                for clock in additions.get("clocks", []):
+                    await connection.execute(
+                        "INSERT INTO clocks (id, description, remaining_beats, on_expire_effect, visible) VALUES (?, ?, ?, ?, ?)",
+                        (clock["id"], clock["description"], clock["remaining_beats"], clock["on_expire_effect"], clock["visible"])
+                    )
+                for agent in additions.get("offscreen_agents", []):
+                    await connection.execute(
+                        "INSERT INTO offscreen_agents (id, name, goal, progress, location, next_move, visible_to) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (agent["id"], agent["name"], agent["goal"], agent["progress"], agent["location"], agent["next_move"], json.dumps(agent["visible_to"]))
+                    )
+            for change in plan.get("state_changes", []) + [item.model_dump() for item in outcome.state_changes]:
                 if change.get("entity") == "item":
                     if change["field"] == "holder_character_id":
                         await connection.execute(

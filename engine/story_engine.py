@@ -9,13 +9,14 @@ from uuid import uuid4
 
 from config import settings
 from core.llm_client import LLMClient
-from core.schemas import ProseTurnResponse, StoryEvent, pydantic_to_json_schema
+from core.schemas import ProseTurnResponse, ResolverResponse, StoryEvent, pydantic_to_json_schema
 from core.prompt_loader import prompt_loader
-from core.types import Character, SceneTurn, StoryInitRequest, TurnResponse, normalize_mode
+from core.types import Character, SceneTurn, StoryInitRequest, QuickStoryRequest, TurnResponse, normalize_mode
 from database import db, turn_store
 from engine.character_agent import CharacterAgent
 from engine.chronicle_manager import ChronicleManager
 from engine.director_agent import DirectorAgent
+from engine.turn_contract import apply_resolved_changes, concrete_progress, merge_continuity, validate_event_links, validate_bible_additions, assign_event_ids
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class StoryEngine:
     async def retry_player_view(self, story_id: str, turn_id: int, character_id: str) -> dict:
         async with self._locks.setdefault(story_id, asyncio.Lock()):
             context = await turn_store.get_player_view_retry_context(story_id, turn_id, character_id)
-            character = await db.get_character(story_id, character_id)
+            character = Character.model_validate(context["character"]) if context.get("character") else await db.get_character(story_id, character_id)
             if not character:
                 raise ValueError("Hahmoa ei löydy.")
             outcome = ProseTurnResponse.model_validate(context["outcome"])
@@ -47,7 +48,7 @@ class StoryEngine:
             if not meta:
                 raise ValueError("Tarinaa ei löydy.")
             view = await self.director.create_player_view(
-                story_id, character, outcome, intention, await turn_store.get_runtime(story_id),
+                story_id, character, outcome, intention, context.get("runtime", {}),
                 context["location"], meta.tone_profile, meta.custom_tone_override,
                 before_turn_id=turn_id
             )
@@ -84,9 +85,12 @@ class StoryEngine:
                     "preceding_prose": "\n\n".join(turn.director_prose for turn in turns[-3:])[-12000:],
                     "authored_prose": prose
                 }, ensure_ascii=False)}], role="director", story_id=story_id,
-                json_schema=pydantic_to_json_schema(ProseTurnResponse, "authored_reconciliation")
+                json_schema=pydantic_to_json_schema(ResolverResponse, "authored_reconciliation")
             )
-            outcome = ProseTurnResponse.model_validate(raw)
+            resolved = ResolverResponse.model_validate(raw)
+            outcome = ProseTurnResponse.model_validate(resolved.model_dump() | merge_continuity(resolved, runtime))
+            if outcome.state_changes or outcome.truth_access_updates or any(outcome.bible_additions.model_dump().values()):
+                raise ValueError("Oman jatkon esikatselu ei vielä tue esineiden, suhteiden tai löytöreittien rakenteisia muutoksia.")
             outcome.prose = prose
             outcome.choices = []
             outcome.image_prompt = ""
@@ -96,6 +100,7 @@ class StoryEngine:
             for event in outcome.events:
                 if not set(event.witnesses) <= roster.keys():
                     raise ValueError("Havainto viittaa tuntemattomaan hahmoon.")
+            assign_event_ids(outcome.events, outcome.character_state_updates + ([outcome.location] if outcome.location else []))
             seen_updates = set()
             for update in outcome.character_state_updates:
                 if update.character_id not in roster or update.character_id in seen_updates:
@@ -164,6 +169,39 @@ class StoryEngine:
                 response.warnings.append("Jatko tallennettiin, mutta tekstivienti epäonnistui.")
             return response
 
+    async def quick_create_story(self, request: QuickStoryRequest) -> dict[str, Any]:
+        description = request.description.strip()
+        if not description:
+            raise ValueError("Kuvaile luotava tarina.")
+        profiles = prompt_loader.list_tone_profiles()
+        profile_ids = {profile["id"] for profile in profiles}
+        if request.tone_profile and request.tone_profile not in profile_ids:
+            raise ValueError("Tuntematon savyprofiili.")
+        raw = await self.llm.json_completion(
+            messages=[
+                {"role": "system", "content": prompt_loader.compose_system_prompt("director/quick_story", include_tone=False)},
+                {"role": "user", "content": json.dumps({
+                    "description": description, "mode": request.mode, "style": request.style,
+                    "tone_profile": request.tone_profile,
+                    "available_tone_profiles": [{"id": profile["id"], "title": profile["title"]} for profile in profiles]
+                }, ensure_ascii=False)}
+            ], role="director", temperature=settings.STORY_INIT_TEMPERATURE,
+            reasoning_effort=settings.STORY_INIT_REASONING_EFFORT, max_tokens=3000,
+            json_schema=pydantic_to_json_schema(StoryInitRequest, "quick_story")
+        )
+        generated = StoryInitRequest.model_validate(raw)
+        if not generated.title.strip():
+            raise ValueError("Pikaluonti ei palauttanut tarinalle nimea.")
+        generated.title = generated.title.strip()
+        generated.user_role = request.mode or normalize_mode(generated.user_role)
+        if request.style and request.style.strip():
+            generated.genre = request.style.strip()
+        generated.tone_profile = request.tone_profile or generated.tone_profile or "default"
+        if generated.tone_profile not in profile_ids:
+            raise ValueError("Pikaluonti palautti tuntemattoman savyprofiilin.")
+        generated.user_idea = description + "\n\n" + (generated.user_idea or "")
+        return await self.initialize_new_story(generated)
+
     async def initialize_new_story(self, request: StoryInitRequest) -> dict[str, Any]:
         raw_id = request.title.lower().strip()
         safe_id = "".join(char if char.isalnum() else "_" for char in raw_id).strip("_")[:40] or "tarina"
@@ -187,6 +225,7 @@ class StoryEngine:
                 custom_tone_override=request.custom_tone_override
             )
             events = [StoryEvent.model_validate(event) for event in result.get("events", [])]
+            assign_event_ids(events, [])
             if mode == "roleplay":
                 player = next((character for character in result["characters"] if character.is_player_controlled), None)
                 player = player or next(iter(result["characters"]), None)
@@ -202,8 +241,7 @@ class StoryEngine:
                 perceived = []
                 for event in events:
                     if character.id in event.witnesses:
-                        detail = next((item for item in event.witness_details if item.character_id == character.id), None)
-                        perceived.append(detail.perceived_text or detail.detail or event.description if detail else event.description)
+                        perceived.append(event.observation_for(character.id))
                 observations[character.id] = "\n".join(perceived) or f"Olet paikassa {result['scene'].location}."
             await turn_store.seed_observations(story_id, observations)
             opening_turn_id = max((turn.id or 0 for turn in await db.get_all_story_turns(story_id)), default=0)
@@ -252,6 +290,8 @@ class StoryEngine:
                 raise ValueError("Tarinalta puuttuu aktiivinen kohtaus.")
             characters = await db.get_all_characters(story_id)
             roster = {character.id: character for character in characters}
+            before_characters = {identifier: character.model_dump() for identifier, character in roster.items()}
+            initial_world = await db.get_planning_world(story_id)
             scene_location_id = db.location_identifier(scene.location)
             present = [character for character in characters if character.id in scene.active_character_ids
                        and character.status == "active" and character.location_id in {None, scene_location_id}]
@@ -268,46 +308,57 @@ class StoryEngine:
             plan = await self.director.plan_turn(story_id, scene, characters, runtime, mode,
                                                  user_input, director_guidance, private_intention)
             bible = await db.get_story_bible(story_id)
+            validate_bible_additions(plan.bible_additions, bible, roster)
             truths = {truth["id"]: truth for truth in bible["secret_truths"]}
             clocks = {clock["id"]: clock for clock in bible["clocks"]}
             offscreen = {agent["id"]: agent for agent in bible["offscreen_agents"]}
             if len({reveal.truth_id for reveal in plan.reveals}) != len(plan.reveals):
                 raise ValueError("Samaa salaisuutta ei voi paljastaa kahdesti samalla vuorolla.")
+            plan_warnings = []
+            for event in plan.events:
+                if event.derived_from.startswith("intent:") or (
+                    event.actor_id in scene.active_character_ids and not director_guidance
+                ):
+                    raise ValueError("Suunnittelija ei saa tehdä hahmon vapaaehtoista päätöstä ennen hahmokutsua.")
             reveal_events = []
+            effective_reveals = []
             for reveal in plan.reveals:
                 truth = truths.get(reveal.truth_id)
                 if not truth:
                     raise ValueError("Suunnitelma viittaa tuntemattomaan salaiseen totuuteen.")
-                next_state = {"hidden": "hinted", "hinted": "revealed", "revealed": "revealed"}[truth["reveal_state"]]
+                if truth["reveal_state"] == "revealed":
+                    continue
+                effective_reveals.append(reveal)
+                # Discovery updates narrator knowledge; only explicit observed events reach characters.
                 reveal_events.append(StoryEvent(
-                    description=(reveal.how if next_state == "hinted" else truth["fact"]),
-                    witnesses=[character_id for character_id in scene.active_character_ids],
-                    derived_from="world"
+                    description=reveal.how, observations=[], derived_from="world", change_kind="information"
                 ))
+            plan.reveals = effective_reveals
             requested_ticks = {}
             for tick in plan.clock_ticks:
                 if tick.clock_id not in clocks:
                     raise ValueError("Suunnitelma viittaa tuntemattomaan kelloon.")
                 requested_ticks[tick.clock_id] = requested_ticks.get(tick.clock_id, 0) + tick.amount
+            expired_clock_ids = []
             for clock_id, clock in clocks.items():
-                if clock["remaining_beats"] - 1 - requested_ticks.get(clock_id, 0) <= 0:
+                if clock["remaining_beats"] > 0 and clock["remaining_beats"] - 1 - requested_ticks.get(clock_id, 0) <= 0:
+                    expired_clock_ids.append(clock_id)
                     reveal_events.append(StoryEvent(
                         description=clock["on_expire_effect"] or clock["description"],
-                        witnesses=list(scene.active_character_ids), derived_from="world"
+                        observations=[], derived_from="world", change_kind="risk"
                     ))
             for agent_id, move in plan.offscreen_moves.items():
                 if agent_id not in offscreen:
                     raise ValueError("Suunnitelma viittaa tuntemattomaan sivuhenkilöön.")
                 if move.strip():
                     reveal_events.append(StoryEvent(
-                        description=move, witnesses=list(offscreen[agent_id]["visible_to"]), derived_from="world"
+                        description=move, observations=[], derived_from="world"
                     ))
             allowed_change_fields = {
                 "character": {"location_id", "physical_state", "mental_state", "status"},
                 "item": {"holder_character_id", "location_id", "state"},
                 "relationship": {"attitude", "trust", "summary"},
             }
-            plan_warnings = []
             supported_changes = []
             for change in plan.state_changes:
                 if change.entity not in allowed_change_fields or change.field not in allowed_change_fields[change.entity]:
@@ -318,71 +369,26 @@ class StoryEngine:
             plan.state_changes = supported_changes
             validated_changes = []
             for change in plan.state_changes:
-                if change.entity == "character":
-                    if change.entity_id not in roster:
-                        raise ValueError("Tilamuutos viittaa tuntemattomaan hahmoon.")
-                    if change.field == "status" and change.value not in {"active", "unconscious", "dead", "inactive", "archived"}:
-                        raise ValueError("Hahmon tilamuutos on virheellinen.")
-                    if change.field != "status" and not isinstance(change.value, str):
-                        raise ValueError("Hahmon tilamuutoksen arvon on oltava tekstiä.")
-                    planned_location_id = db.location_identifier(plan.scene_location) if plan.scene_location else None
-                    if change.field == "location_id" and str(change.value) != planned_location_id and not await db.location_exists(story_id, str(change.value)):
-                        raise ValueError("Hahmon sijaintimuutos viittaa tuntemattomaan paikkaan.")
-                    setattr(roster[change.entity_id], change.field, change.value)
-                elif change.entity == "item":
-                    item = await db.get_item(story_id, change.entity_id)
-                    if not item:
-                        logger.warning("Discarded planned state change for unknown item %s", change.entity_id)
-                        continue
-                    if change.field == "holder_character_id" and change.value is not None and change.value not in scene.active_character_ids:
-                        raise ValueError("Esine voidaan siirtää vain paikalla olevalle hahmolle.")
-                    if change.field == "state" and not isinstance(change.value, str):
-                        raise ValueError("Esineen tila on määritettävä tekstinä.")
-                    if change.field in {"holder_character_id", "location_id"} and change.value is not None and not isinstance(change.value, str):
-                        raise ValueError("Esineen tilamuutoksen arvon on oltava tekstiä.")
-                    planned_location_id = db.location_identifier(plan.scene_location) if plan.scene_location else None
-                    if change.field == "location_id" and str(change.value) != planned_location_id and not await db.location_exists(story_id, str(change.value)):
-                        raise ValueError("Esineen sijaintimuutos viittaa tuntemattomaan paikkaan.")
-                else:
-                    relation_ids = change.entity_id.split("|", 1)
-                    if len(relation_ids) != 2 or not await db.relationship_exists(story_id, *relation_ids):
-                        raise ValueError("Tilamuutos viittaa tuntemattomaan suhteeseen.")
-                    if change.field == "trust":
-                        if not isinstance(change.value, (int, float)) or not -1 <= change.value <= 1:
-                            raise ValueError("Suhteen luottamuksen on oltava välillä -1 ja 1.")
-                    elif not isinstance(change.value, str):
-                        raise ValueError("Suhteen muutosarvon on oltava tekstiä.")
+                if change.entity == "character" and change.field in {"mental_state", "location_id"} and not director_guidance:
+                    raise ValueError("Suunnittelija ei saa päättää hahmon mielentilaa tai liikkumista.")
+                if change.entity == "item" and not await db.get_item(story_id, change.entity_id):
+                    logger.warning("Discarded planned state change for unknown item %s", change.entity_id)
+                    continue
                 validated_changes.append(change)
             plan.state_changes = validated_changes
-            planned_progress = bool(
-                plan.reveals or plan.clock_ticks or plan.offscreen_moves or plan.state_changes
-                or plan.character_state_updates
-                or (plan.scene_location and plan.scene_location != scene.location)
-            )
-            if runtime.get("no_progress_beats", 0) >= 2 and not planned_progress:
-                raise ValueError("Pysähtynyttä tarinaa ei voi jatkaa ilman maailman etenemistä.")
+            assign_event_ids(plan.events, plan.state_changes)
+            effective_ticks = any(clocks[tick.clock_id]["remaining_beats"] > 0 for tick in plan.clock_ticks)
+            changed_offscreen = any(move.strip() and move != offscreen[identifier]["progress"]
+                                    for identifier, move in plan.offscreen_moves.items())
+            planned_state_progress = await apply_resolved_changes(
+                story_id, plan.state_changes, roster, scene.active_character_ids, scene.location)
+            planned_progress = bool(plan.reveals or expired_clock_ids or effective_ticks
+                                    or changed_offscreen or planned_state_progress)
             plan.events.extend(reveal_events)
-            planned_spawned = []
-            for candidate in plan.spawned_characters:
-                if candidate.id in roster or not candidate.id or not all(char.isalnum() or char in "_-" for char in candidate.id):
-                    raise ValueError("Suunnitelmassa on virheellinen uusi hahmo.")
-                character = Character(**candidate.model_dump(), status="active")
-                character.is_player_controlled = False
-                character.location_id = db.location_identifier(plan.scene_location or scene.location)
-                roster[character.id] = character
-                planned_spawned.append(character)
-            if not set(plan.active_character_ids) <= roster.keys():
-                raise ValueError("Suunnitelmassa on tuntematon läsnäolija.")
-            event_location_id = db.location_identifier(plan.scene_location or scene.location)
-            if plan.scene_location and plan.scene_location != scene.location:
-                for character_id in plan.active_character_ids:
-                    if character_id in roster:
-                        roster[character_id].location_id = event_location_id
-            scene.active_character_ids = plan.active_character_ids
-            scene.location = plan.scene_location or scene.location
+            event_location_id = db.location_identifier(scene.location)
             present_ids = {
                 character.id for character in roster.values()
-                if character.id in plan.active_character_ids
+                if character.id in scene.active_character_ids
                 and character.location_id in {None, event_location_id}
             }
             for event in plan.events:
@@ -390,19 +396,8 @@ class StoryEngine:
                     raise ValueError("Suunnitelman havaitsija ei ole tunnettu hahmo.")
                 if not set(event.witnesses) <= present_ids:
                     logger.warning("Removed out-of-scene witnesses from planned event %s", event.id)
-                    event.witnesses = list(dict.fromkeys(identifier for identifier in event.witnesses if identifier in present_ids))
-                event.witness_details = [detail for detail in event.witness_details if detail.character_id in event.witnesses]
+                    event.observations = [observation for observation in event.observations if observation.character_id in present_ids]
                 event.derived_from = "world"
-            updated_ids = set()
-            for update in plan.character_state_updates:
-                if update.character_id not in roster or update.character_id in updated_ids:
-                    raise ValueError("Suunnitelmassa on virheellinen hahmopäivitys.")
-                updated_ids.add(update.character_id)
-                for field in ("physical_state", "mental_state", "status"):
-                    value = getattr(update, field)
-                    if value is not None:
-                        setattr(roster[update.character_id], field, value)
-            scene.scene_goal = plan.scene_goal
             characters = list(roster.values())
             present = [character for character in characters if character.id in scene.active_character_ids
                        and character.status == "active" and character.location_id in {None, event_location_id}]
@@ -415,8 +410,8 @@ class StoryEngine:
             intentions = []
             if mode == "roleplay" and player and player in present:
                 intentions.append({"character_id": player.id, "character_name": player.name,
-                                   "action_and_speech": user_input or "Odotan ja tarkkailen.",
-                                   "internal_monologue": private_intention or ""})
+                                   "action": user_input or "Odotan ja tarkkailen.", "speech": "",
+                                   "private_thought": private_intention or ""})
             decision_ids = set(plan.decision_character_ids)
             acting = [character for character in present
                       if not (mode == "roleplay" and character.is_player_controlled)
@@ -427,7 +422,8 @@ class StoryEngine:
             async def decide(character: Character):
                 async with semaphore:
                     observation = await turn_store.get_observation(story_id, character.id)
-                    new_observations = [event.description for event in plan.events if character.id in event.witnesses]
+                    new_observations = [event.observation_for(character.id) for event in plan.events
+                                        if character.id in event.witnesses]
                     if new_observations:
                         observation += "\n\n" + "\n".join(new_observations)
                     agent_character = character.model_copy(update={"is_player_controlled": False}) if mode != "roleplay" else character
@@ -439,7 +435,7 @@ class StoryEngine:
                     )
                     progress = {"character_id": character.id, "character_name": character.name}
                     if mode != "roleplay":
-                        progress["character_thought"] = decision["internal_monologue"]
+                        progress["character_thought"] = decision["private_thought"]
                     progress_queue.put_nowait(progress)
                     return {"character_id": character.id, "character_name": character.name, **decision}
 
@@ -471,7 +467,11 @@ class StoryEngine:
                     if decision.get("goal_update"):
                         roster[decision["character_id"]].current_goal = decision["goal_update"]
                     intentions.append(decision)
+            for intention in intentions:
+                intention["id"] = uuid4().hex
             yield {"type": "phase", "phase": "prose_synthesis", "message": "Kertoja ratkaisee tapahtumat ja kirjoittaa jatkon..."}
+            combined_bible = {field: bible[field] + [item.model_dump() for item in getattr(plan.bible_additions, field)]
+                              for field in ("secret_truths", "clocks", "offscreen_agents")}
             raw = await self.director.synthesize_turn_prose(
                 story_id=story_id, scene=scene, all_character_intentions=intentions,
                 recent_prose_context="\n\n".join(turn.director_prose for turn in turns[-3:])[-12000:],
@@ -480,15 +480,24 @@ class StoryEngine:
                 reader_wish=user_input if mode != "roleplay" else None,
                 runtime=runtime, characters=characters,
                 player_character_id=player.id if mode == "roleplay" and player else None,
-                turn_plan=plan.model_dump() | {"truths": bible["secret_truths"], "clocks": bible["clocks"],
-                                                "offscreen_agents": bible["offscreen_agents"]}
+                turn_plan=plan.model_dump() | {"truths": combined_bible["secret_truths"], "clocks": combined_bible["clocks"],
+                                                "offscreen_agents": combined_bible["offscreen_agents"],
+                                                "items": initial_world["items"], "relationships": initial_world["relationships"],
+                                                "locations": initial_world["locations"]}
             )
             outcome = ProseTurnResponse.model_validate(raw)
+            assign_event_ids(outcome.events, outcome.character_state_updates + outcome.state_changes + outcome.truth_access_updates
+                             + ([outcome.location] if outcome.location else []))
+            validate_bible_additions(outcome.bible_additions, combined_bible, roster)
+            if outcome.location:
+                location_id = outcome.location.id
+                if location_id != db.location_identifier(outcome.location.name):
+                    raise ValueError("Paikan tunniste ei vastaa sen nimea.")
             outcome.scene_location = outcome.scene_location or scene.location
             outcome.scene_goal = outcome.scene_goal or scene.scene_goal
             if runtime.get("chapter_title"):
                 outcome.chapter_title = runtime["chapter_title"]
-            spawned = list(planned_spawned)
+            spawned = []
             for candidate in outcome.spawned_characters:
                 if candidate.id in roster or not candidate.id or not all(char.isalnum() or char in "_-" for char in candidate.id):
                     raise ValueError("Kertoja palautti päällekkäisen tai virheellisen hahmotunnisteen.")
@@ -503,14 +512,14 @@ class StoryEngine:
                 if roster[identifier].location_id in {None, current_location_id}
             }
             intention_ids = {intent["character_id"] for intent in intentions}
+            supplied_intentions = {intent["id"]: intent for intent in intentions}
             accepted_events = []
             for event in outcome.events:
                 if not set(event.witnesses) <= roster.keys():
                     raise ValueError("Tapahtuman havaitsija ei ole tunnettu hahmo.")
                 if not set(event.witnesses) <= allowed_witnesses:
                     logger.warning("Removed out-of-scene witnesses from resolver event %s", event.id)
-                    event.witnesses = list(dict.fromkeys(identifier for identifier in event.witnesses if identifier in allowed_witnesses))
-                event.witness_details = [detail for detail in event.witness_details if detail.character_id in event.witnesses]
+                    event.observations = [observation for observation in event.observations if observation.character_id in allowed_witnesses]
                 if event.derived_from.startswith("intent:"):
                     actor_id = event.derived_from.split(":", 1)[1]
                     if actor_id not in intention_ids:
@@ -518,6 +527,13 @@ class StoryEngine:
                     if event.actor_id and event.actor_id != actor_id:
                         raise ValueError("Tapahtuman tekijä ei vastaa aikomuslähdettä.")
                     event.actor_id = actor_id
+                    supplied = supplied_intentions.get(event.intent_id)
+                    if not supplied or supplied["character_id"] != actor_id:
+                        raise ValueError("Tapahtuman aieviite ei vastaa taman vuoron aietta.")
+                elif event.derived_from == "routine":
+                    supplied = supplied_intentions.get(event.intent_id)
+                    if not supplied or event.actor_id != supplied["character_id"]:
+                        raise ValueError("Rutiini ei vastaa taman vuoron valtuutettua aietta.")
                 else:
                     text = event.description.casefold()
                     action_words = ("nousi", "seurasi", "astui", "sanoi", "vastasi", "lähti", "siirtyi",
@@ -534,6 +550,8 @@ class StoryEngine:
                 if event not in final_events:
                     final_events.append(event)
             outcome.events = final_events
+            validate_event_links(outcome.events, outcome.character_state_updates + outcome.state_changes + outcome.truth_access_updates
+                                 + ([outcome.location] if outcome.location else []))
             for update in outcome.character_state_updates:
                 if update.character_id not in roster:
                     raise ValueError("Tilapäivitys viittaa tuntemattomaan hahmoon.")
@@ -548,19 +566,34 @@ class StoryEngine:
                 outcome.active_character_ids = list(scene.active_character_ids) + [character.id for character in spawned]
             if not set(outcome.active_character_ids) <= roster.keys() or not set(outcome.decision_character_ids) <= roster.keys():
                 raise ValueError("Kertoja viittaa tuntemattomaan aktiiviseen hahmoon.")
+            if outcome.scene_location != scene.location:
+                final_location_id = db.location_identifier(outcome.scene_location)
+                for identifier in outcome.active_character_ids:
+                    roster[identifier].location_id = final_location_id
+            resolved_progress = await apply_resolved_changes(
+                story_id, outcome.state_changes, roster, set(allowed_witnesses), outcome.scene_location)
+            for access in outcome.truth_access_updates:
+                if access.truth_id not in truths:
+                    raise ValueError("Löytöreitin päivitys viittaa tuntemattomaan totuuteen.")
+                if access.related_location_id is not None and access.related_location_id != db.location_identifier(outcome.scene_location):
+                    if not await db.location_exists(story_id, access.related_location_id):
+                        raise ValueError("Löytöreitin päivitys viittaa tuntemattomaan paikkaan.")
+            objective_progress = concrete_progress(
+                before_characters, roster, outcome.events, planned_progress or resolved_progress)
             for intention in intentions:
                 roster[intention["character_id"]].last_active_turn = turn_index
             player_views = {}
             player_view_statuses = {}
             player_view_errors = {}
             stored_characters = await db.get_all_characters(story_id)
-            viewpoint_character = next((character for character in stored_characters if character.is_player_controlled), None)
+            selected_viewpoint = next((character for character in stored_characters if character.is_player_controlled), None)
+            viewpoint_character = roster.get(selected_viewpoint.id) if selected_viewpoint else None
             own_intention = {}
             if viewpoint_character:
                 player_view_statuses[viewpoint_character.id] = "view_pending"
                 own_intention = next((intention for intention in intentions if intention["character_id"] == viewpoint_character.id), {})
-            action = "\n".join(f"[{intention['character_name']}]: {intention['action_and_speech']}" for intention in intentions)
-            monologue = "\n".join(f"[{intention['character_name']}]: {intention['internal_monologue']}" for intention in intentions)
+            action = "\n".join(f"[{intention['character_name']}]: {intention['action']} {intention.get('speech', '')}".strip() for intention in intentions)
+            monologue = "\n".join(f"[{intention['character_name']}]: {intention['private_thought']}" for intention in intentions)
             response = TurnResponse(
                 turn_index=turn_index, mode=mode, request_id=request_id,
                 acting_character=player.model_dump() if mode == "roleplay" and player else None,
@@ -568,7 +601,7 @@ class StoryEngine:
                 choices=outcome.choices, image_prompt=outcome.image_prompt,
                 updated_characters=list(roster.values()), spawned_characters=spawned,
                 story_text_snippet=outcome.prose, is_chapter_end=outcome.chapter_end,
-                requires_player_input=plan.requires_player_input or outcome.requires_player_input or mode == "roleplay",
+                requires_player_input=outcome.requires_player_input or mode == "roleplay",
                 player_view_status="view_pending" if viewpoint_character else None,
                 warnings=list(plan_warnings)
             )
@@ -583,8 +616,7 @@ class StoryEngine:
                  "player_views": player_views,
                  "player_view_statuses": player_view_statuses,
                  "player_view_errors": player_view_errors,
-                 "objective_progress": bool(planned_progress
-                                            or any(event.derived_from == "consequence" and event.actor_id for event in outcome.events)),
+                 "objective_progress": objective_progress,
                  "director_guidance": director_guidance, "director_model": settings.DIRECTOR_MODEL,
                  "character_model": settings.CHARACTER_MODEL, "intentions": intentions,
                  "contract_version": 2,
@@ -597,7 +629,7 @@ class StoryEngine:
                     try:
                         player_views[viewpoint_character.id] = await self.director.create_player_view(
                             story_id, viewpoint_character, outcome, own_intention, runtime,
-                            scene.location, meta.tone_profile, meta.custom_tone_override)
+                            outcome.scene_location, meta.tone_profile, meta.custom_tone_override)
                         response.player_view_status = "view_ready"
                         break
                     except Exception as exc:

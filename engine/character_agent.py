@@ -39,13 +39,15 @@ class CharacterAgent:
         # Jos hahmo on tajuton tai kuollut, se ei tee itsenäisiä tekoja
         if self.character.status == "unconscious":
             return {
-                "internal_monologue": "(Hahmo on tajuton ja tiedoton ympäristöstään.)",
-                "action_and_speech": f"{self.character.name} makaa tajuttomana eikä reagoi tilanteeseen."
+                "private_thought": "",
+                "action": "",
+                "speech": ""
             }
         elif self.character.status == "dead":
             return {
-                "internal_monologue": "(Hahmo on kuollut.)",
-                "action_and_speech": f"{self.character.name} on eloton."
+                "private_thought": "",
+                "action": "",
+                "speech": ""
             }
 
         # Haetaan hahmon aiemmat muistit tietokannasta (laajennettu raja pitkiin tarinoihin)
@@ -108,10 +110,6 @@ class CharacterAgent:
 
         # Hahmo EI enää päivitä omaa tilaansa — Kertoja tekee sen synthesize_turn_prose -kutsussa
         decision = CharacterDecisionResponse.model_validate(result).model_dump()
-        decision["internal_monologue"] = decision["private_thought"] or decision["internal_monologue"]
-        if decision["action"]:
-            speech = f' "{decision["speech"]}"' if decision["speech"] else ""
-            decision["action_and_speech"] = decision["action"] + speech
         decision["context_manifest"] = {
             "event_ids": await db.get_witnessed_event_ids(story_id, self.character.id),
             "fact_ids": [],

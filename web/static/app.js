@@ -717,9 +717,9 @@ function renderCharacterAccordion(characters) {
         </div>
         <div class="state-item private-detail">
           <strong>Viimeisin aie:</strong>
-          <p>${escapeHtml(currentStoryData.last_intentions?.[char.id]?.action_and_speech || 'Ei tallennettua aietta.')}</p>
+          <p>${escapeHtml([currentStoryData.last_intentions?.[char.id]?.action, currentStoryData.last_intentions?.[char.id]?.speech].filter(Boolean).join(' ') || 'Ei tallennettua aietta.')}</p>
           <strong>Omat aiemmat ajatukset:</strong>
-          <p>${escapeHtml(currentStoryData.last_intentions?.[char.id]?.internal_monologue || 'Ei tallennettuja ajatuksia.')}</p>
+          <p>${escapeHtml(currentStoryData.last_intentions?.[char.id]?.private_thought || 'Ei tallennettuja ajatuksia.')}</p>
         </div>
         ${char.secret_motive && (document.getElementById('revealSecrets')?.checked || (currentMode === 'roleplay' && isPlayer)) ? `
         <div class="state-item">
@@ -943,6 +943,9 @@ async function loadToneProfilesForNewStory() {
     const data = await res.json();
     const select = document.getElementById("newToneProfile");
     if (!select) return;
+    const quickSelect = document.getElementById("quickStoryTone");
+    const previousQuickTone = quickSelect?.value || "";
+    if (quickSelect) quickSelect.innerHTML = '<option value="">Automaattinen</option>';
     select.innerHTML = "";
 
     data.profiles.forEach(p => {
@@ -950,7 +953,9 @@ async function loadToneProfilesForNewStory() {
       opt.value = p.id;
       opt.textContent = p.title;
       select.appendChild(opt);
+      if (quickSelect) quickSelect.appendChild(opt.cloneNode(true));
     });
+    if (quickSelect) quickSelect.value = previousQuickTone;
 
     updateNewStoryTonePreview();
   } catch (err) {
@@ -970,6 +975,18 @@ function openNewStoryModal() {
   document.getElementById("newStoryModal")?.classList.remove("hidden");
 }
 
+function setStoryCreationMethod(method) {
+  const quick = method === 'quick';
+  document.getElementById('quickStoryFields').classList.toggle('hidden', !quick);
+  document.getElementById('detailedStoryFields').classList.toggle('hidden', quick);
+  for (const [identifier, selected] of [['quickCreationTab', quick], ['detailedCreationTab', !quick]]) {
+    const tab = document.getElementById(identifier);
+    tab.setAttribute('aria-selected', String(selected));
+    tab.classList.toggle('btn-primary', selected);
+    tab.classList.toggle('btn-secondary', !selected);
+  }
+}
+
 function closeNewStoryModal() {
   document.getElementById("newStoryModal")?.classList.add("hidden");
 }
@@ -985,6 +1002,8 @@ function togglePlayerFields(role) {
 
 async function startNewStory() {
   if (isCreatingStory) return;
+  const quick = !document.getElementById('quickStoryFields').classList.contains('hidden');
+  const description = document.getElementById('quickStoryDescription').value.trim();
   const title = document.getElementById("newTitle").value.trim();
   const genre = document.getElementById("newGenre").value.trim() || "Seikkailu";
   const userIdea = document.getElementById("newIdea").value.trim();
@@ -994,10 +1013,20 @@ async function startNewStory() {
   const playerName = document.getElementById("newPlayerCharName")?.value.trim() || null;
   const playerDetails = document.getElementById("newPlayerCharDetails")?.value.trim() || null;
 
-  if (!title) {
-    alert("Anna tarinalle otsikko!");
+  if (quick ? !description : !title) {
+    alert(quick ? "Kuvaile luotava tarina." : "Anna tarinalle otsikko!");
     return;
   }
+  const payload = quick ? {
+    description,
+    mode: document.getElementById('quickStoryMode').value || null,
+    style: document.getElementById('quickStoryStyle').value.trim() || null,
+    tone_profile: document.getElementById('quickStoryTone').value || null
+  } : {
+    title, genre, user_idea: userIdea, user_role: role,
+    player_character_name: playerName, player_character_details: playerDetails,
+    custom_plot_idea: plotIdea, tone_profile: toneProfile
+  };
 
   closeNewStoryModal();
   isCreatingStory = true;
@@ -1013,26 +1042,17 @@ async function startNewStory() {
 
   const overlay = document.getElementById("storyCreationOverlay");
   overlay?.classList.remove("hidden");
-  document.getElementById("creationTitle").textContent = `Luodaan: "${title}"...`;
-  document.getElementById("creationSubtext").textContent = `Kertoja rakentaa maailmaa (${genre}), hahmoja ja alkutilannetta.`;
-  document.getElementById("creationDetails").textContent = `Sävy: ${toneProfile}`;
+  document.getElementById("creationTitle").textContent = quick ? 'Luodaan tarinaa...' : `Luodaan: "${title}"...`;
+  document.getElementById("creationSubtext").textContent = quick ? 'Kertoja muodostaa lähtöasetelman...' : `Kertoja rakentaa maailmaa (${genre}), hahmoja ja alkutilannetta.`;
+  document.getElementById("creationDetails").textContent = quick ? '' : `Sävy: ${toneProfile}`;
 
   showLiveAgentBar(true, "Kertoja rakentaa uutta maailmaa ja hahmoja...");
 
   try {
-    const res = await fetch("/api/stories", {
+    const res = await fetch(quick ? "/api/stories/quick" : "/api/stories", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: title,
-        genre: genre,
-        user_idea: userIdea,
-        user_role: role,
-        player_character_name: playerName,
-        player_character_details: playerDetails,
-        custom_plot_idea: plotIdea,
-        tone_profile: toneProfile
-      })
+      body: JSON.stringify(payload)
     });
 
     if (!res.ok) {
@@ -1053,10 +1073,11 @@ async function startNewStory() {
     await loadStoryList();
     await loadStory(storyId);
 
-    setMode(role);
+    setMode(data.data.mode || role);
   } catch (err) {
     overlay?.classList.add("hidden");
     alert(err.message);
+    document.getElementById('newStoryModal')?.classList.remove('hidden');
   } finally {
     isCreatingStory = false;
     showLiveAgentBar(false);

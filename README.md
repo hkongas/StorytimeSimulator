@@ -47,7 +47,9 @@ Lukutilan näkökulmavalinta erottaa kertojan kaikkitietävän proosan ja valitu
 
 Sisällysluettelo siirtyy lukuotsikoihin. Kertaukset avautuvat valitun näkökulman tietojen mukaan; pelaajan otsikotkaan eivät saa paljastaa salaisuuksia. Vanhoille vuoroille tai myöhemmin valitulle eri pelaajahahmolle ei arvata rajattua versiota, vaan puuttuva näkökulma merkitään. Pelaajaversion proosaa ei voi muokata kertojan tekstieditorilla. Tekstikorjaus ei automaattisesti kirjoita rajattua versiota uudelleen. TXT/Markdown-vienti on edelleen kertojan proosa.
 
-Jokaisen hyväksytyn vuoron jatkuvuustilaan tallentuvat tapahtumatiivistelmä, faktat, avoimet juonilangat, juonisuunnitelma ja ohjaajan muistiinpanot. Salaiset maailmanfaktat eivät ole proosatekstin tai hahmojen havaintojen osa, vaan erillisissä `secret_truths`-riveissä. Uudelle tarinalle ohjaaja tuottaa 4–8 löydettävää totuutta, 1–3 painetta kuvaavaa kelloa ja enintään kaksi sivussa toimivaa agenttia. Vanhat tarinat saavat saman aineiston ensimmäisellä jatkolla (lazy-init). Ohjaaja voi siirtää totuutta vaiheittain `hidden` → `hinted` → `revealed`; kellot etenevät jokaisella vuorolla ja niiden vanheneminen tuottaa havaittavan tapahtuman. Kolmen peräkkäisen objektiivisesti muuttumattoman vuoron jälkeen suunnittelu vaatii totuuden paljastamista, kellon tikkausta, sivussa toimivaa siirtoa tai muuta konkreettista tilamuutosta.
+Salaiset totuudet, kellot ja sivussa toimivat agentit ovat valinnaisia (0–n). Tarinan alustus voi luoda niitä asetelman tai käyttäjän toiveen perusteella; tyhjää tarinaraamattua ei täytetä automaattisesti. Kertoja voi lisätä perusteltuja uusia rakenteita vuoron `bible_additions`-kentässä, ja käyttäjä voi muokata niitä tarinaraamatun editorissa. Uusi salaisuus alkaa piilossa eikä korvaa olemassa olevaa totuutta. Paljastukset etenevät `hidden` → `hinted` → `revealed`; hahmo saa vain oman havaintonsa, ei salaisen faktan koko tekstiä. Löytöreitin muutos viittaa sitä aiheuttaneeseen tapahtumaan. Olemassa olevat kellot etenevät kerran vuorossa, ja niiden päättymisen seuraus laukeaa kerran. Rauhallisen tarinan ei tarvitse sisältää salaisuuksia, uhkia tai aikapainetta.
+
+Mallivastaukset ovat vaihekohtaisia. Hahmo palauttaa yhden toimintayrityksen, puheen ja yksityisen ajatuksen ilman rinnakkaisia yhteensopivuuskenttiä. Suunnittelija ei palauta kohtauksen siirtoa tai hahmopäivityksiä. Ratkaisija palauttaa vuoron `recap_delta`-tekstin ja jatkuvuuden faktojen sekä juonilankojen lisäykset/poistot, ei koko historiaa uudelleen. Ohjelma yhdistää muutokset aiempaan tilaan ja tiivistää pitkän tapahtumahistorian erillisellä mallikutsulla. Tilamuutosten `event_id`-viitteet tarkistetaan ennen tallennusta; vapaaehtoinen teko tai valtuutettu rutiini viittaa tämän vuoron täsmälliseen `intent_id`-aikeeseen. Paikan tunniste ja nimi kulkevat erikseen `location: {event_id, id, name}` -rakenteessa.
 
 ## Tekstimuokkaus
 
@@ -63,7 +65,7 @@ Kumoamispainike palauttaa viimeisintä vuoroa edeltäneet hahmot, muistit, havai
 
 ## Vuoron Tietovirta
 
-Vuoro käyttää yhtä rajattua sykliä: kertojan suunnitelma, valittujen hahmojen aikeet ja kertojan loppuratkaisu. Suunnitelma soveltaa maailmanmuutokset ennen hahmojen päätöksiä ja välittää vain havaittavat seuraukset. Tilakohtaiset ohjeet painottavat romaanissa kirjailijan suuntaa, simulaatiossa itsenäisiä aikeita ja roolipelissä pelaajan yritystä. Toiveen toteutumista ei selitetä erillisellä ilmoituksella. Suunnittelukutsu lisää yhden mallikutsun vuoroon. Kertojan pysäytyssignaali katkaisee automaattijatkon; useita sisäisiä syklejä ei vielä ajeta. Oma jatko kirjoitetaan myös tarinan lopussa samassa näkymässä, ei erillisessä pop-upissa.
+Vuoro käyttää yhtä rajattua sykliä: ulkoisten maailmanmuutosten suunnitelma, valittujen hahmojen aikeet ja kertojan loppuratkaisu. Suunnittelija ei ratkaise hahmojen vapaaehtoisia toimia eikä vanhoja aikomuksia uudelleen. Ratkaisukutsu tuottaa ensin auktoritatiiviset tapahtumat ja toteutuneet tilamuutokset sekä niiden pohjalta proosan samassa vastauksessa; erillistä uudelleenkirjoituskutsua ei tehdä. Esineiden hallussapito, suhteet ja hahmojen sijainnit tallennetaan rakenteisina seurauksina atomisesti. Hahmokohtaisia havaintoja käytetään samalla tavalla päätöksissä ja muistien tallennuksessa. Rajattu lukuteksti käyttää vuoron jälkeistä hahmotilaa ja erottaa uskomukset havainnoista. Kehotteet suosivat tekemistä ja seurauksia toistuvan negaatio-kerronnan sijaan, mutta sallivat tilanteeseen vaikuttavat kielteiset havainnot. Suunnitelma soveltaa maailmanmuutokset ennen hahmojen päätöksiä ja välittää vain havaittavat seuraukset. Tilakohtaiset ohjeet painottavat romaanissa kirjailijan suuntaa, simulaatiossa itsenäisiä aikeita ja roolipelissä pelaajan yritystä. Toiveen toteutumista ei selitetä erillisellä ilmoituksella. Suunnittelukutsu lisää yhden mallikutsun vuoroon. Kertojan pysäytyssignaali katkaisee automaattijatkon; useita sisäisiä syklejä ei vielä ajeta. Oma jatko kirjoitetaan myös tarinan lopussa samassa näkymässä, ei erillisessä pop-upissa.
 
 ```text
 Tarinan tila ja versio
@@ -83,7 +85,7 @@ Hahmo saa seuraavalla kierroksella myös oman viimeisen hyväksytyn aikomuksensa
 
 ## Tallennus Ja Palautuminen
 
-- Tarinalla on oma SQLite-tietokanta `stories/<tunniste>/story.db`; skeemaversio 8 sisältää `story_branches`-perustan ja oletushaaran `main`.
+- Tarinalla on oma SQLite-tietokanta `stories/<tunniste>/story.db`; nykyinen kehitysskeema 9 sisältää `story_branches`-perustan ja oletushaaran `main`.
 - Rakenteinen maailma tallentaa paikat, esineet, suhteet, salaiset totuudet, kellot, offscreen-agentit ja tapahtumien havaitsijat omiin tauluihinsa; hahmon `location_id` ei ole fyysiseen tilaan upotettua vapaatekstiä.
 - Hahmojen muutokset, havainnot, muistot, kohtaus, proosa, jatkuvuustila ja pyyntökuitti hyväksytään yhdessä transaktiossa.
 - Tilaversio estää vanhaan tilanteeseen perustuvaa generointia ylikirjoittamasta välissä tehtyä muokkausta.
@@ -93,7 +95,7 @@ Hahmo saa seuraavalla kierroksella myös oman viimeisen hyväksytyn aikomuksensa
 - Katkennut tai virheellinen mallivastaus hylätään. Se ei muutu keksityksi varatarinaksi.
 - `story.txt` ja `story.md` ovat tietokannasta muodostettavia vientitiedostoja. Niihin käsin tehdyt muutokset eivät päivitä tarinan tilaa ja korvautuvat seuraavassa viennissä.
 
-Vanha tietokanta päivitetään avattaessa (skeemaversio 8). Migraatio lisää rakenteisen maailman, tapahtumat ja muistien lähdekentät; aiemmin luotuja tarinoita ei poisteta. Version 4 kannasta tehdään `story.pre-v5.db`-varmuuskopio; myöhemmistä kannoista säilytetään vastaava edeltävän version varmuuskopio. Kumoamispisteet pakataan gzip-muotoon. Säilytä lisäksi omat varmuuskopiot tärkeistä tarinoista. Älä käytä samaa tarinakansiota samanaikaisesti usealta koneelta pilvisynkronoinnin kautta.
+Projekti on julkaisematon kehitysversio. Vanhoja tietokantoja ei migroida eikä korjata automaattisesti: luo vanhan skeeman tarinat uudelleen. Tiedostoja ei poisteta automaattisesti. Kumoamispisteet pakataan gzip-muotoon. Älä käytä samaa tarinakansiota samanaikaisesti usealta koneelta pilvisynkronoinnin kautta.
 
 ## Yksityisyys Ja Asetukset
 
@@ -128,7 +130,7 @@ Tokenkentät rajaavat yhden vastauksen budjettia, eivät proosan tavoitepituutta
 - `engine/story_engine.py`: tilakohtainen vuoroprosessi ja hyväksyminen.
 - `engine/director_agent.py`, `engine/character_agent.py`: agenttien syötteet ja validoidut vastaukset.
 - `database/turn_store.py`: vuorotransaktio, havainnot, jatkuvuus ja pyyntökuitit.
-- `database/db.py`: muut tietokantatoiminnot, muistihaku ja versionoidut migraatiot.
+- `database/db.py`: muut tietokantatoiminnot, muistihaku ja nykyisen skeeman alustus.
 - `core/schemas.py`: mallivastausten tietosopimukset.
 - `core/llm_client.py`, `core/providers/`: mallirajapinnat, vastaukset ja lokitus.
 - `core/profile_store.py`: palvelinpuolen avainprofiilit.
@@ -145,7 +147,7 @@ Vanhoja kronikoitsija-, aistisuodatin- ja valvojatoimintoja on edelleen lähdeko
 python -m unittest discover -s tests -v
 ```
 
-Testit käyttävät väliaikaisia kansioita ja valemalleja, eivät käyttäjän tarinoita tai oikeita mallikutsuja. Ne kattavat muun muassa tietorajauksen, tilojen erot, pelaajan toiminnan, tallennuksen eheyden, uudelleenlähetyksen, muokkausristiriidat, muistinhaun, migraation, taustatyöt ja polkurajaukset. Testit ovat rajallisia eivätkä kata kaikkia käyttötilanteita.
+Testit käyttävät väliaikaisia kansioita ja valemalleja, eivät käyttäjän tarinoita tai oikeita mallikutsuja. Ne kattavat muun muassa tietorajauksen, tilojen erot, pelaajan toiminnan, tallennuksen eheyden, uudelleenlähetyksen, muokkausristiriidat, muistinhaun, skeeman validoinnin, taustatyöt ja polkurajaukset. Testit ovat rajallisia eivätkä kata kaikkia käyttötilanteita.
 
 Käyttöliittymää on kokeiltu kehitystyön yhteydessä työpöytä- ja puhelinleveydellä, mutta kattavaa selain- tai käyttäjätestausta ei ole tehty. Kirjallisen laadun ja pitkien tarinoiden muistamisen arviointi edellyttää erillisiä oikeiden mallien kokeiluja.
 

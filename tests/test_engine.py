@@ -26,6 +26,9 @@ class MockLLMClient(LLMClient):
         sys_msg = (messages[0]["content"] if messages else "").lower()
 
         schema_name = (json_schema or {}).get("json_schema", {}).get("name")
+        if schema_name == "quick_story":
+            return {"title": "Mallin nimeama tarina", "genre": "Fantasia", "user_idea": "Mallin taydentama maailma",
+                "user_role": "novel", "tone_profile": "default"}
         if schema_name == "story_initialization":
             return {
                 "world_lore": "Vanha valtakunta on varjojen peitossa ja muinaiset linnat seisovat usvan keskellä.",
@@ -90,11 +93,11 @@ class MockLLMClient(LLMClient):
             return response
         elif schema_name == "authored_reconciliation":
             return {
-                "prose": "Model must not replace user prose", "summary": "A bell rang.",
-                "events": [{"description": "A bell rings.", "witnesses": ["char_eerik"], "derived_from": "world"}],
-                "world_facts": ["The bell has rung."], "plot_threads": [], "decision_character_ids": ["char_eerik"],
+                "prose": "Model must not replace user prose", "recap_delta": "A bell rang.",
+                "events": [{"id": "resolved", "description": "A bell rings.", "observations": [{"character_id": "char_eerik", "text": "A bell rings."}], "derived_from": "world"}],
+                "continuity": {"facts_added": ["The bell has rung."]}, "decision_character_ids": ["char_eerik"],
                 "active_character_ids": ["char_eerik", "char_mira"],
-                "character_state_updates": [{"character_id": "char_eerik", "mental_state": "Alert"}]
+                "character_state_updates": [{"event_id": "resolved", "character_id": "char_eerik", "mental_state": "Alert"}]
             }
         elif role == "character":
             return {
@@ -105,18 +108,15 @@ class MockLLMClient(LLMClient):
                 "if_interrupted": "Vetäydyn suojaan",
                 "private_thought": "Mietin, kuka toinen liikkuu raunioilla näin myöhään...",
                 "importance": 6,
-                "internal_monologue": "Mietin, kuka toinen liikkuu raunioilla näin myöhään...",
-                "action_and_speech": "Eerik astuu esiin ja kuiskaa: 'Kuka siellä on?'",
-                "updated_physical_state": "Valppaana, lihakset jännittyneinä",
-                "updated_mental_state": "Varautunut ja jännittynyt",
-                "new_memory": "Kohtasin toisen henkilön vanhoilla raunioilla sumuisena yönä."
             }
         elif schema_name == "player_view":
-            return {"prose": "PRIVATE_VIEW_TEXT", "recap": "PRIVATE_VIEW_RECAP", "chapter_title": "Oma havainto", "choices": ["Tarkkaile"]}
+            return {"prose": "PRIVATE_VIEW_TEXT", "recap_delta": "PRIVATE_VIEW_RECAP", "chapter_title": "Oma havainto", "choices": ["Tarkkaile"]}
+        elif schema_name == "continuity_summary":
+            return {"summary": "COMPACT_HISTORY"}
         elif schema_name == "prose_turn":
             return {
-            "events": [{"description": "Eerik ja Mira kohtaavat raunioilla.", "witnesses": ["char_eerik", "char_mira"], "derived_from": "consequence"}],
-            "summary": "Eerik ja Mira ovat kohdanneet raunioilla.",
+            "events": [{"id": "resolved", "description": "Eerik ja Mira kohtaavat raunioilla.", "observations": [{"character_id": "char_eerik", "text": "Eerik ja Mira kohtaavat raunioilla."}, {"character_id": "char_mira", "text": "Eerik ja Mira kohtaavat raunioilla."}], "derived_from": "consequence"}],
+            "recap_delta": "Eerik ja Mira ovat kohdanneet raunioilla.",
                 "prose": "Eerikin ääni rikkoi yön hiljaisuuden vaimeana kaikuna. Varjojen keskeltä erottui nopea liike, kun Mira astui esiin kivipaaden takaa tikari valmiina kädessään.",
                 "choices": [
                     "Kysy Miran aikeista raunioilla",
@@ -124,9 +124,6 @@ class MockLLMClient(LLMClient):
                     "Ehdotat varovaista rauhaa ja jaettua nuotiota"
                 ],
                 "spawned_characters": [],
-                "world_update": "Raunioiden ympäristössä liikkuu muitakin yöllisiä etsijöitä.",
-                "plot_pivot_needed": False,
-                "plot_pivot_note": "",
                 "image_prompt": "Two mysterious figures in a foggy ancient forest ruins at night, dramatic lighting, fantasy oil painting"
             }
         elif "chronicler" in sys_msg or "summarize" in sys_msg:
@@ -214,6 +211,59 @@ async def test_full_story_cycle():
     print("\n[OK] Kaikki testit läpäisty onnistuneesti!\n")
 
 class ProviderTests(unittest.TestCase):
+    def test_request_start_logging_precedes_calls_and_redacts_url(self):
+        from unittest.mock import AsyncMock, patch
+        client = LLMClient(provider="openai", api_key="SECRET_KEY",
+                           base_url="https://user:SECRET_PASSWORD@example.com/v1?token=SECRET_TOKEN#SECRET_FRAGMENT")
+        provider = client._get_provider()
+
+        async def check_call(**kwargs):
+            self.assertTrue(any("LLM request starting" in line for line in captured.output))
+            return "text"
+
+        async def exercise():
+            with patch.object(provider, "chat_completion", side_effect=check_call):
+                await client.chat_completion([], model="test-model", role="character")
+            with patch.object(provider, "json_completion", new=AsyncMock(side_effect=[ValueError("retry"), {}])):
+                await client.json_completion([], model="test-model")
+
+        with self.assertLogs("uvicorn.error.llm", level="INFO") as captured:
+            asyncio.run(exercise())
+        starts = [line for line in captured.output if "LLM request starting" in line]
+        self.assertEqual(len(starts), 3)
+        self.assertIn("role=character", starts[0])
+        self.assertIn("provider=openai model=test-model endpoint=https://example.com/v1", starts[0])
+        self.assertIn("attempt=2", starts[-1])
+        responses = [line for line in captured.output if "LLM response received" in line]
+        self.assertEqual(len(responses), 2)
+        self.assertIn("kind=chat role=character", responses[0])
+        self.assertIn("duration_seconds=", responses[0])
+        self.assertIn("kind=json", responses[1])
+        self.assertIn("attempt=2", responses[1])
+        self.assertNotIn("SECRET", "\n".join(captured.output))
+
+    def test_stream_response_logged_only_after_completion(self):
+        from unittest.mock import patch
+        client = LLMClient(provider="openai", api_key="test")
+        provider = client._get_provider()
+
+        async def tokens(**kwargs):
+            yield "PRIVATE_RESPONSE"
+            provider.last_usage = {"total_tokens": 12}
+
+        async def exercise():
+            stream = client.stream_completion([], model="test-model")
+            self.assertEqual(await anext(stream), "PRIVATE_RESPONSE")
+            self.assertFalse(any("LLM response received" in line for line in captured.output))
+            with self.assertRaises(StopAsyncIteration):
+                await anext(stream)
+
+        with self.assertLogs("uvicorn.error.llm", level="INFO") as captured:
+            with patch.object(provider, "stream_completion", side_effect=tokens):
+                asyncio.run(exercise())
+        self.assertTrue(any("LLM response received: kind=stream" in line and "total_tokens=12" in line for line in captured.output))
+        self.assertNotIn("PRIVATE_RESPONSE", "\n".join(captured.output))
+
     def test_azure_completion_budget_ignores_deployment_alias(self):
         from core.providers import AzureProvider
         provider = AzureProvider("test", "https://example.services.ai.azure.com/openai/v1/")
@@ -357,8 +407,8 @@ class RecordingLLM(MockLLMClient):
         result = await super().json_completion(messages, role=role, **kwargs)
         if "prose" in result and kwargs.get("json_schema", {}).get("json_schema", {}).get("name") != "authored_reconciliation":
             if self.invalid:
-                result["events"] = [{"description": "Invalid witness", "witnesses": ["absent"], "derived_from": "consequence"}]
-            result["character_state_updates"] = [{"character_id": "char_mira", "status": "unconscious"}]
+                result["events"] = [{"id": "resolved", "description": "Invalid witness", "observations": [{"character_id": "absent", "text": "Invalid witness"}], "derived_from": "consequence"}]
+            result["character_state_updates"] = [{"event_id": "resolved", "character_id": "char_mira", "status": "unconscious"}]
         return result
 
 
@@ -391,6 +441,24 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(logs[0]["cached_tokens"], 50)
         self.assertTrue(logs[0]["cost_known"])
 
+    async def test_legacy_database_is_rejected_without_migration(self):
+        import aiosqlite
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        async with aiosqlite.connect(db.get_db_path("test")) as connection:
+            await connection.execute("PRAGMA user_version = 8")
+        with self.assertRaisesRegex(ValueError, "migraatioita ei tueta"):
+            await db.init_story_db("test")
+        self.assertFalse(list(db.get_story_dir("test").glob("*.pre-*.db")))
+
+    async def test_incomplete_database_is_rejected_without_repair(self):
+        import aiosqlite
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        async with aiosqlite.connect(db.get_db_path("test")) as connection:
+            await connection.execute("ALTER TABLE api_calls DROP COLUMN cost_known")
+            await connection.commit()
+        with self.assertRaisesRegex(ValueError, "puutteellinen"):
+            await db.init_story_db("test")
+
     async def test_prompt_logging_is_opt_in_and_compressed(self):
         import base64
         import gzip
@@ -417,46 +485,6 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
                 await db.init_story_db("incomplete")
         self.assertFalse(db.get_db_path("incomplete").exists())
 
-    async def test_current_version_repairs_missing_scenes_table(self):
-        import aiosqlite
-        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
-        async with aiosqlite.connect(db.get_db_path("test")) as connection:
-            await connection.execute("DROP TABLE scenes")
-            await connection.commit()
-        await db.init_story_db("test")
-        scene_id = await db.create_scene("test", Scene(location="Room", scene_goal="Test"))
-        self.assertIsNotNone(scene_id)
-        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v9.db").exists())
-        self.assertEqual((await db.get_story_meta("test")).title, "Original")
-
-    async def test_current_version_repairs_missing_log_columns(self):
-        import aiosqlite
-        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
-        await db.log_api_call("test", "director", "azure-test", 0.1)
-        async with aiosqlite.connect(db.get_db_path("test")) as connection:
-            await connection.execute("ALTER TABLE api_calls DROP COLUMN cost_known")
-            await connection.execute("ALTER TABLE api_calls DROP COLUMN cached_tokens")
-            await connection.commit()
-        await db.log_api_call("test", "director", "azure-test", 0.2,
-                              cached_tokens=10, cost_known=False)
-        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v9.db").exists())
-        logs = await db.get_api_calls_for_story("test")
-        self.assertEqual(len(logs), 2)
-        self.assertEqual(logs[0]["cached_tokens"], 10)
-        self.assertFalse(logs[0]["cost_known"])
-        self.assertEqual((await db.get_story_meta("test")).title, "Original")
-        await db.init_story_db("test")
-        self.assertEqual(len(await db.get_api_calls_for_story("test")), 2)
-
-    async def test_legacy_migration_keeps_backup(self):
-        import aiosqlite
-        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
-        async with aiosqlite.connect(db.get_db_path("test")) as connection:
-            await connection.execute("PRAGMA user_version = 0")
-        await db.init_story_db("test")
-        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v4.db").exists())
-        self.assertEqual((await db.get_story_meta("test")).title, "Original")
-
     async def test_full_cycle_with_new_contract(self):
         await test_full_story_cycle()
 
@@ -466,7 +494,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
                 result = await super().json_completion(*args, **kwargs)
                 if "initial_characters" in result:
                     result["initial_characters"][0]["id"] = "char-eerik"
-                    result["initial_scene"]["events"] = [{"description": "A bell rings.", "witnesses": ["char-eerik"], "derived_from": "world"}]
+                    result["initial_scene"]["events"] = [{"id": "resolved", "description": "A bell rings.", "observations": [{"character_id": "char-eerik", "text": "A bell rings."}], "derived_from": "world"}]
                 return result
         from database import turn_store
         result = await StoryEngine(HyphenModel()).initialize_new_story(StoryInitRequest(title="Identifier test"))
@@ -482,6 +510,13 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
     async def test_secret_bible_and_clock_progression(self):
         import aiosqlite
         model, engine, story_id = await self.create_recorded_story()
+        original = model.json_completion
+        async def unchanged(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "prose_turn":
+                result["character_state_updates"] = []
+            return result
+        model.json_completion = unchanged
         bible = await db.get_story_bible(story_id)
         self.assertEqual(len(bible["secret_truths"]), 4)
         self.assertEqual(len(bible["clocks"]), 1)
@@ -589,7 +624,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         async def invalid_change(*args, **kwargs):
             result = await original(*args, **kwargs)
             if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
-                result["state_changes"] = [{"entity": "item", "entity_id": "missing", "field": "state", "value": "taken"}]
+                result["state_changes"] = [{"event_id": "resolved", "entity": "item", "entity_id": "missing", "field": "state", "value": "taken"}]
             return result
 
         model.json_completion = invalid_change
@@ -604,8 +639,8 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         async def unsupported_change(*args, **kwargs):
             result = await original(*args, **kwargs)
             if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
-                result["state_changes"] = [{"entity": "location", "entity_id": "x", "field": "name", "value": "Y"},
-                                           {"entity": "relationship", "entity_id": "a|b", "field": "id = 1; --", "value": "Z"}]
+                result["state_changes"] = [{"event_id": "resolved", "entity": "location", "entity_id": "x", "field": "name", "value": "Y"},
+                                           {"event_id": "resolved", "entity": "relationship", "entity_id": "a|b", "field": "id = 1; --", "value": "Z"}]
             return result
 
         model.json_completion = unsupported_change
@@ -632,13 +667,14 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             result = await original(*args, **kwargs)
             if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "prose_turn":
                 result["events"] = [{
-                    "description": "Mira nousi ja seurasi Eerikiä.", "witnesses": ["char_mira"],
+                    "id": "resolved", "description": "Mira nousi ja seurasi Eerikiä.", "observations": [{"character_id": "char_mira", "text": "Mira nousi ja seurasi Eerikiä."}],
                     "derived_from": "consequence", "actor_id": "char_mira"
                 }]
             return result
 
         model.json_completion = invented_action
-        await engine.advance_turn(story_id, mode="simulation")
+        with self.assertRaisesRegex(ValueError, "tapahtumaviite"):
+            await engine.advance_turn(story_id, mode="simulation")
         async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
             async with connection.execute("SELECT 1 FROM events WHERE description LIKE 'Mira nousi%'") as cursor:
                 self.assertIsNone(await cursor.fetchone())
@@ -709,22 +745,6 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await db.get_active_scene(story_id)).id, original_scene.id)
         self.assertEqual((await db.get_all_story_turns(story_id))[-1].director_prose, "EDITED_CONTEXT_MARKER")
 
-    async def test_v4_editor_migration_keeps_backup(self):
-        import aiosqlite
-        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
-        async with aiosqlite.connect(db.get_db_path("test")) as connection:
-            await connection.execute("DROP TABLE turn_snapshots")
-            await connection.execute("DROP TABLE prose_edits")
-            await connection.execute("PRAGMA user_version = 4")
-            await connection.commit()
-        await db.init_story_db("test")
-        self.assertTrue(db.get_db_path("test").with_suffix(".pre-v5.db").exists())
-        async with aiosqlite.connect(db.get_db_path("test")) as connection:
-            async with connection.execute("PRAGMA user_version") as cursor:
-                self.assertEqual((await cursor.fetchone())[0], 8)
-            await connection.execute("SELECT * FROM turn_snapshots")
-        self.assertEqual((await db.get_story_meta("test")).title, "Original")
-
     async def test_authored_preview_acceptance_and_undo(self):
         from database import turn_store
         model, engine, story_id = await self.create_recorded_story()
@@ -760,7 +780,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         original = model.json_completion
         async def invalid_witness(*args, **kwargs):
             result = await original(*args, **kwargs)
-            result["events"] = [{"description": "A bell rings.", "witnesses": ["unknown"], "derived_from": "consequence"}]
+            result["events"] = [{"id": "resolved", "description": "A bell rings.", "observations": [{"character_id": "unknown", "text": "A bell rings."}], "derived_from": "consequence"}]
             return result
         model.json_completion = invalid_witness
         revision = await turn_store.get_revision(story_id)
@@ -799,12 +819,13 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         async def plan_changes(*args, **kwargs):
             result = await original(*args, **kwargs)
             if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "turn_plan":
-                result["events"] = [{"description": "VISIBLE_POWER_FAILURE", "witnesses": ["char_eerik"], "derived_from": "consequence"}]
-                result["character_state_updates"] = [{"character_id": "char_mira", "status": "dead"}]
+                result["events"] = [{"id": "resolved", "description": "VISIBLE_POWER_FAILURE", "observations": [{"character_id": "char_eerik", "text": "VISIBLE_POWER_FAILURE"}], "derived_from": "consequence"}]
+                result["state_changes"] = [{"event_id": "resolved", "entity": "character", "entity_id": "char_mira", "field": "status", "value": "dead"}]
                 result["decision_character_ids"] = ["char_eerik"]
                 result["requires_player_input"] = True
             elif kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "prose_turn":
                 result["character_state_updates"] = []
+                result["requires_player_input"] = True
             return result
         model.json_completion = plan_changes
         response = await engine.advance_turn(story_id, mode="simulation", director_guidance="SECRET_OVERRIDE")
@@ -823,8 +844,6 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         async def changing_intention(*args, **kwargs):
             result = await original(*args, **kwargs)
             if kwargs.get("role") == "character":
-                result["internal_monologue"] = f"PRIVATE_THOUGHT_{generation}"
-                result["action_and_speech"] = f"ATTEMPT_{generation}"
                 result["private_thought"] = f"PRIVATE_THOUGHT_{generation}"
                 result["action"] = f"ATTEMPT_{generation}"
                 result["speech"] = ""
@@ -833,15 +852,15 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         await engine.advance_turn(sid, mode="simulation")
         previous = await turn_store.get_last_intention(sid, "char_eerik")
         self.assertEqual(previous["character_id"], "char_eerik")
-        self.assertEqual(previous["internal_monologue"], "PRIVATE_THOUGHT_1")
+        self.assertEqual(previous["private_thought"], "PRIVATE_THOUGHT_1")
         model.calls.clear()
         generation = 2
         await engine.advance_turn(sid, mode="simulation")
         latest = await turn_store.get_last_intention(sid, "char_eerik")
-        self.assertEqual(latest["internal_monologue"], "PRIVATE_THOUGHT_2")
-        self.assertEqual(latest["action_and_speech"], "ATTEMPT_2")
+        self.assertEqual(latest["private_thought"], "PRIVATE_THOUGHT_2")
+        self.assertEqual(latest["action"], "ATTEMPT_2")
         planning = next(messages for role, messages in model.calls
-                        if role == "director" and "previous_intentions" in messages[1]["content"])
+                        if role == "director" and '"truths"' in messages[1]["content"])
         self.assertNotIn("PRIVATE_THOUGHT_1", planning[1]["content"])
         calls = [messages for role, messages in model.calls if role == "character"]
         self.assertIn("YOUR PREVIOUS PRIVATE THOUGHT AND ATTEMPT", str(calls))
@@ -899,8 +918,8 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "prose_turn":
                 result.update(chapter_title="Kohtaaminen", director_plan="EVOLVING_PLAN", director_notes="CURRENT_NOTES",
                               world_description="CHANGED_WORLD", character_state_updates=[])
-                result["events"] = [{"description": "VISIBLE_OUTCOME", "witnesses": ["char_eerik"], "derived_from": "consequence"},
-                                    {"description": "SECRET_OFFSTAGE", "witnesses": [], "derived_from": "world"}]
+                result["events"] = [{"id": "resolved", "description": "VISIBLE_OUTCOME", "observations": [{"character_id": "char_eerik", "text": "VISIBLE_OUTCOME"}], "derived_from": "consequence"},
+                                    {"id": "offstage", "description": "SECRET_OFFSTAGE", "observations": [], "derived_from": "world"}]
             return result
         model.json_completion = evolving_state
         await engine.advance_turn(sid, mode="simulation")
@@ -914,7 +933,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("char_mira", player_call[1]["content"])
         model.calls.clear()
         await engine.advance_turn(sid, mode="simulation")
-        planning = next(messages for role, messages in model.calls if "previous_intentions" in messages[1]["content"])
+        planning = next(messages for role, messages in model.calls if '"truths"' in messages[1]["content"])
         inputs = json.loads(planning[1]["content"])
         self.assertEqual(inputs["plot"], "EVOLVING_PLAN")
         self.assertNotIn("notes", inputs)
@@ -952,10 +971,10 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         model.json_completion = select_former_player
         await engine.advance_turn(story_id, mode="novel")
         self.assertEqual(len([role for role, messages in model.calls if role == "character"]), 1)
-        planning = next(messages for role, messages in model.calls if role == "director" and "previous_intentions" in messages[1]["content"])
+        planning = next(messages for role, messages in model.calls if role == "director" and '"truths"' in messages[1]["content"])
         self.assertTrue(all(not character["is_player_controlled"] for character in json.loads(planning[1]["content"])["characters"]))
         synthesis = next(messages for role, messages in model.calls if role == "director" and "[CHARACTER DOSSIERS" in messages[1]["content"])
-        self.assertIn("NEVER in prose", synthesis[0]["content"])
+        self.assertIn("never in prose", synthesis[0]["content"])
 
     async def test_player_is_not_lost_among_many_characters(self):
         model, engine, story_id = await self.create_recorded_story()
@@ -1011,7 +1030,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         character = Character(id="actor", name="Actor", age=30, status="unconscious")
         scene_id = await db.create_scene("test", Scene(location="Room", scene_goal="Test"))
         turn = SceneTurn(scene_id=scene_id, turn_index=1, director_prose="Prose")
-        outcome = ProseTurnResponse(prose="Prose", summary="Summary", events=[StoryEvent(description="A bell rings.", witnesses=["actor"], derived_from="world")], active_character_ids=[])
+        outcome = ProseTurnResponse(prose="Prose", summary="Summary", events=[StoryEvent(description="A bell rings.", observations=[{"character_id": "actor", "text": "A bell rings."}], derived_from="world")], active_character_ids=[])
         response = TurnResponse(turn_index=1, director_prose="Prose", story_text_snippet="Prose", request_id="one")
         await turn_store.commit_turn("test", 0, turn, [character], outcome, response, "fingerprint", {})
         self.assertEqual((await db.get_character("test", "actor")).status, "unconscious")

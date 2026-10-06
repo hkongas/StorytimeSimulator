@@ -1,4 +1,6 @@
 import logging
+from time import perf_counter
+from urllib.parse import urlsplit, urlunsplit
 from typing import List, Dict, Any, Optional, AsyncIterator
 from config import settings
 from core.context_budget import context_budget
@@ -14,7 +16,7 @@ from core.providers import (
 )
 import database.db as db
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error.llm")
 
 class LLMClient:
     """Asynkroninen LLM-asiakasfasadi, joka hallitsee tarjoajainstanssit ja reitittää kutsut."""
@@ -72,6 +74,27 @@ class LLMClient:
 
         return self._provider_instance
 
+    def _log_request(self, provider: LLMProvider, model: str, role: str, kind: str, attempt: int = 1):
+        if isinstance(provider, AzureProvider):
+            endpoint, _, _ = provider._resolve_endpoint_and_headers(model)
+        else:
+            endpoint = f"{(provider.base_url or '').rstrip('/')}/chat/completions"
+        parsed = urlsplit(endpoint)
+        host = parsed.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        if parsed.port:
+            host += f":{parsed.port}"
+        safe_endpoint = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+        logger.info("LLM request starting: kind=%s role=%s provider=%s model=%s endpoint=%s attempt=%s",
+                    kind, role, self.provider_name, model, safe_endpoint, attempt)
+
+    def _log_response(self, provider: LLMProvider, model: str, role: str, kind: str, started: float, attempt: int = 1):
+        usage = provider.last_usage
+        logger.info("LLM response received: kind=%s role=%s provider=%s model=%s duration_seconds=%.3f total_tokens=%s attempt=%s",
+                    kind, role, self.provider_name, usage.get("model", model), perf_counter() - started,
+                    usage.get("total_tokens", "unknown"), attempt)
+
     def _check_context(self, messages: List[Dict[str, str]]):
         if context_budget.calculate_messages_tokens(messages) > settings.MAX_INPUT_TOKENS:
             raise ValueError("Tarinan syöte ylittää asetetun kontekstibudjetin. Tiivistä maailman tietoja tai promptteja.")
@@ -122,6 +145,8 @@ class LLMClient:
         )
         sid = story_id or self.story_id
         try:
+            self._log_request(provider, target_model, role, "chat")
+            started = perf_counter()
             content = await provider.chat_completion(
                 messages=messages,
                 model=target_model,
@@ -131,6 +156,7 @@ class LLMClient:
                 response_format=response_format,
                 timeout=timeout
             )
+            self._log_response(provider, target_model, role, "chat", started)
             if sid:
                 u = getattr(provider, "last_usage", {})
                 await db.log_api_call(
@@ -188,17 +214,14 @@ class LLMClient:
         )
         sid = story_id or self.story_id
 
-        logger.info(
-            f"LLM JSON-kutsu ({role}): provider={self.provider_name}, model={target_model}, "
-            f"max_tokens={target_tokens}, temp={target_temp}, schema={'yes' if json_schema else 'no'}"
-        )
-
         # Ensimmäinen yritys ja mahdollinen korotetun token-määrän uusintayritys
         attempts = 2
         current_max_tokens = target_tokens
 
         for attempt in range(1, attempts + 1):
             try:
+                self._log_request(provider, target_model, role, "json", attempt)
+                started = perf_counter()
                 res = await provider.json_completion(
                     messages=messages,
                     model=target_model,
@@ -208,6 +231,7 @@ class LLMClient:
                     timeout=timeout,
                     json_schema=json_schema
                 )
+                self._log_response(provider, target_model, role, "json", started, attempt)
                 if sid:
                     u = getattr(provider, "last_usage", {})
                     await db.log_api_call(
@@ -297,6 +321,9 @@ class LLMClient:
         target_model, target_temp, target_tokens, target_reasoning = self._resolve_params(
             role=role, model=model, temperature=temperature, max_tokens=max_tokens, reasoning_effort=reasoning_effort
         )
+        self._log_request(provider, target_model, role, "stream")
+        provider.last_usage = {}
+        started = perf_counter()
         async for token in provider.stream_completion(
             messages=messages,
             model=target_model,
@@ -306,3 +333,4 @@ class LLMClient:
             timeout=timeout
         ):
             yield token
+        self._log_response(provider, target_model, role, "stream", started)

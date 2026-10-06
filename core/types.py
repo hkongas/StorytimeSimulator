@@ -97,6 +97,13 @@ class SceneTurn(BaseModel):
 
 # API Request ja Response mallit
 
+class QuickStoryRequest(BaseModel):
+    description: str = Field(min_length=1, max_length=20000)
+    mode: Optional[Literal["novel", "simulation", "roleplay"]] = None
+    style: Optional[str] = Field(default=None, max_length=1000)
+    tone_profile: Optional[str] = Field(default=None, max_length=100)
+
+
 class StoryInitRequest(BaseModel):
     title: str
     genre: Optional[str] = "Fantasia / Seikkailu"

@@ -343,6 +343,34 @@
         <button class="modal-close" onclick="closeNewStoryModal()">✕</button>
       </div>
       <div class="modal-body">
+        <div class="form-group" role="tablist" aria-label="Luontitapa">
+          <button id="quickCreationTab" class="btn btn-primary" role="tab" aria-selected="true" onclick="setStoryCreationMethod('quick')">Pikaluonti</button>
+          <button id="detailedCreationTab" class="btn btn-secondary" role="tab" aria-selected="false" onclick="setStoryCreationMethod('detailed')">Tarkka luonti</button>
+        </div>
+        <div id="quickStoryFields">
+          <div class="form-group">
+            <label for="quickStoryDescription">Mitä haluat lukea tai pelata?</label>
+            <textarea id="quickStoryDescription" class="styled-textarea" rows="6" maxlength="20000" placeholder="Rauhallinen kahvila avaruusasemalla. Pelaan sen uutta omistajaa."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="quickStoryMode">Moodi</label>
+            <select id="quickStoryMode" class="styled-select">
+              <option value="">Automaattinen</option>
+              <option value="novel">Romaani</option>
+              <option value="simulation">Simulaatio</option>
+              <option value="roleplay">Roolipeli</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="quickStoryStyle">Tyyli / genre</label>
+            <input id="quickStoryStyle" class="styled-input" maxlength="1000" placeholder="Automaattinen">
+          </div>
+          <div class="form-group">
+            <label for="quickStoryTone">Sävyprofiili</label>
+            <select id="quickStoryTone" class="styled-select"><option value="">Automaattinen</option></select>
+          </div>
+        </div>
+        <div id="detailedStoryFields" class="hidden">
         <div class="form-group">
           <label data-i18n="newStoryTitleLabel">Tarinan Otsikko *</label>
           <input type="text" id="newTitle" class="styled-input" data-i18n-placeholder="newStoryTitlePlaceholder" placeholder="esim. Kipinä pimeydessä, Varjojen Laakso, Tähtiristeilijä">
@@ -385,6 +413,7 @@
             <label data-i18n="playerCharDetailsLabel">Pelaajahahmon taustat ja toiveet</label>
             <input type="text" id="newPlayerCharDetails" class="styled-input" data-i18n-placeholder="playerCharDetailsPlaceholder" placeholder="esim. Salapoliisi, varovainen luonne, kantaa salattua sormusta">
           </div>
+        </div>
         </div>
       </div>
       <div class="modal-footer">
@@ -794,7 +823,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261005-logexport2"></script>
+  <script src="/static/app.js?v=20261006-quickcreation"></script>
   <script src="/static/turns.js?v=20261005-progress1"></script>
   <script src="/static/bible.js?v=20261005-bible1"></script>
 </body>

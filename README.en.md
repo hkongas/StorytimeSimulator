@@ -47,7 +47,9 @@ The reading toolbar separates omniscient narrator prose from the selected player
 
 Chapter navigation uses stable titles. Optional recaps and titles follow the selected viewpoint. Legacy turns or turns belonging to another selected character have an explicit unavailable-view marker rather than a guessed or omniscient fallback. The prose editor edits only narrator text and does not rewrite the limited version. TXT/Markdown exports remain narrator prose.
 
-The story bible stores 4–8 discoverable objective truths, 1–3 pressure clocks, and up to two offscreen agents separately from character/player context. New stories generate the bible during initialization; old stories receive one on their first advance. Truths progress from hidden to hinted to revealed, clocks tick on each beat and create observable expiry events, and three stagnant beats force a concrete reveal, clock tick, offscreen move, or state change. Locations, items, relationships, events, and per-character witnesses are stored as structured rows.
+Secret truths, clocks and offscreen agents are optional (zero or more). Initialization creates them only when warranted by the premise or user request. An empty bible stays empty. The narrator may add supported new entries through `bible_additions`; users can edit them in the bible editor. New truths start hidden and cannot overwrite existing facts. Reveals and clock expiry remain narrator-only until explicit per-character observations establish perception. Quiet stories need no mysteries, hazards or deadlines.
+
+Model contracts are phase-specific. Character responses have one action, speech and private thought, without duplicate compatibility fields. The planner cannot return scene movement or character-state updates. The resolver returns this beat's `recap_delta` and continuity fact/thread additions and removals, not a rewritten cumulative history. The engine merges these deltas and periodically compresses long history in a separate model call. State consequences reference a verified `event_id`; voluntary actions and authorized routines reference the exact current `intent_id`. Events use one `observations` list with each observer's text, and locations separate identity from display name with `location: {event_id, id, name}`.
 
 ## Text Editing
 
@@ -77,7 +79,7 @@ Memory retrieval is stable and combines recency, importance, and keyword relevan
 
 ## Storage and Recovery
 
-- Each story has its own SQLite database at `stories/<id>/story.db`; schema version 8 includes a `story_branches` foundation and the default `main` branch.
+- Each story has its own SQLite database at `stories/<id>/story.db`; current development schema 9 includes a `story_branches` foundation and the default `main` branch.
 - Character changes, observations, memories, scene, prose, continuity state, and request receipt are committed together in one transaction.
 - A state revision prevents generation based on stale state from overwriting an intervening edit.
 - Resubmitting the same request ID returns the committed response. Do not reuse an ID for different content.
@@ -86,7 +88,7 @@ Memory retrieval is stable and combines recency, importance, and keyword relevan
 - Truncated or invalid model responses are rejected; they are not turned into an invented fallback story.
 - `story.txt` and `story.md` are exports generated from the database. Manual edits to them do not update story state and will be overwritten by the next export.
 
-An old database is migrated when opened (schema version 8). Migration adds structured world state, events, memory provenance, compressed undo snapshots, and a `main` branch foundation without removing existing stories. Older databases are backed up before migration. Keep additional backups of important stories. Do not use the same story directory from multiple computers at once through cloud sync.
+This is an unpublished development version. Old databases are not migrated or automatically repaired; recreate stories using the current schema. Existing files are not automatically deleted. Do not use the same story directory from multiple computers at once through cloud sync.
 
 ## Privacy and Configuration
 
@@ -111,7 +113,7 @@ Output budgets default to 128000 tokens for the director and prose, and 64000 fo
 - `engine/story_engine.py`: mode-specific turn flow and commit logic.
 - `engine/director_agent.py`, `engine/character_agent.py`: agent inputs and validated responses.
 - `database/turn_store.py`: turn transaction, observations, continuity, and request receipts.
-- `database/db.py`: other database operations, memory retrieval, and versioned migrations.
+- `database/db.py`: other database operations, memory retrieval, and current-schema initialization.
 - `core/schemas.py`: data contracts for model responses.
 - `core/llm_client.py`, `core/providers/`: model interfaces, responses, and logging.
 - `core/profile_store.py`: server-side key profiles.
@@ -128,7 +130,7 @@ Legacy chronicle, perceptual-filter, and watchdog functions remain in the source
 python -m unittest discover -s tests -v
 ```
 
-Tests use temporary directories and fake models, not the user's stories or real model calls. They cover, among other things, information boundaries, mode differences, player actions, storage integrity, request replay, edit conflicts, memory retrieval, migrations, background jobs, and path confinement. The test suite is limited and does not cover every usage scenario.
+Tests use temporary directories and fake models, not the user's stories or real model calls. They cover, among other things, information boundaries, mode differences, player actions, storage integrity, request replay, edit conflicts, memory retrieval, schema validation, background jobs, and path confinement. The test suite is limited and does not cover every usage scenario.
 
 The UI has been tried during development at desktop and mobile widths, but comprehensive browser or user testing has not been done. Assessing prose quality and long-story recall requires separate experiments with real models.
 

@@ -102,7 +102,6 @@ CREATE TABLE IF NOT EXISTS event_witnesses (
     character_id TEXT NOT NULL,
     detail TEXT NOT NULL DEFAULT '',
     modality TEXT NOT NULL DEFAULT 'saw',
-    perceived_text TEXT,
     PRIMARY KEY (event_id, character_id),
     FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
 );
@@ -140,6 +139,7 @@ CREATE TABLE IF NOT EXISTS story_meta (
     tone_profile TEXT DEFAULT 'default',
     custom_tone_override TEXT DEFAULT '',
     language TEXT DEFAULT 'fi',
+    theme_color TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

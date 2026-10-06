@@ -38,14 +38,21 @@ class RelationshipSeed(BaseModel):
 
 
 class StoryBibleResponse(BaseModel):
-    secret_truths: List[SecretTruth] = Field(min_length=4, max_length=8)
-    clocks: List[StoryClock] = Field(min_length=1, max_length=3)
-    offscreen_agents: List[OffscreenAgent] = Field(max_length=2)
+    secret_truths: List[SecretTruth] = Field(default_factory=list)
+    clocks: List[StoryClock] = Field(default_factory=list)
+    offscreen_agents: List[OffscreenAgent] = Field(default_factory=list)
 
 
 class RevealDecision(BaseModel):
     truth_id: str
     how: str
+
+
+class TruthAccessUpdate(BaseModel):
+    event_id: str
+    truth_id: str
+    discoverable_via: str = Field(description="Current evidence or access route after world changes; preserve uncertainty and the original truth")
+    related_location_id: Optional[str] = None
 
 
 class ClockTick(BaseModel):
@@ -54,6 +61,7 @@ class ClockTick(BaseModel):
 
 
 class StateChange(BaseModel):
+    event_id: str
     entity: str = Field(description="character, item or relationship")
     entity_id: str
     field: str
@@ -89,20 +97,36 @@ class StoryInitItem(BaseModel):
     state: str = ""
 
 
-class StoryWitness(BaseModel):
+class StoryObservation(BaseModel):
     character_id: str
-    detail: str = ""
-    modality: Literal["saw", "heard", "faintly_heard"] = "saw"
-    perceived_text: Optional[str] = None
+    text: str = Field(min_length=1, description="Only what this character perceived; no hidden thoughts or narrator knowledge")
+    modality: Literal["saw", "heard", "faintly_heard", "felt"] = "saw"
 
 
 class StoryEvent(BaseModel):
-    id: str = Field(default_factory=lambda: uuid4().hex)
+    id: str = Field(default_factory=lambda: uuid4().hex, description="Unique event ID used by consequence updates")
     description: str = Field(min_length=1, max_length=2000, description="Observable event only, no hidden thoughts or narrator-only facts")
-    witnesses: List[str] = Field(description="IDs of characters who actually perceived the event; empty for a secret world event")
-    witness_details: List[StoryWitness] = Field(default_factory=list)
+    observations: List[StoryObservation] = Field(default_factory=list, description="One account per actual observer; empty for a secret event")
     derived_from: str = Field(description="intent:<character_id>, consequence, routine, or world")
     actor_id: Optional[str] = None
+    intent_id: Optional[str] = Field(default=None, description="Exact supplied intention ID for voluntary actions and authorized routines")
+    change_kind: Literal["none", "information", "location", "possession", "relationship", "risk", "goal"] = Field(
+        default="none", description="Concrete new outcome; none for unchanged observations or repeated information")
+
+    @property
+    def witnesses(self) -> List[str]:
+        return [observation.character_id for observation in self.observations]
+
+    def observation_for(self, character_id: str) -> str:
+        return next((observation.text for observation in self.observations
+                     if observation.character_id == character_id), "")
+
+    @field_validator("observations")
+    @classmethod
+    def unique_observers(cls, value):
+        if len({observation.character_id for observation in value}) != len(value):
+            raise ValueError("An event must have one observation per character")
+        return value
 
     @field_validator("derived_from")
     @classmethod
@@ -126,32 +150,47 @@ class StoryInitResponse(BaseModel):
     director_notes: str = Field(description="Director's internal notes on themes, pacing, atmosphere")
     initial_characters: List[StoryInitCharacter] = Field(description="2-4 key characters starting the story")
     initial_scene: StoryInitScene = Field(description="The opening scene details and narrative prose")
-    secret_truths: List[SecretTruth] = Field(default_factory=list, max_length=8)
-    clocks: List[StoryClock] = Field(default_factory=list, max_length=3)
-    offscreen_agents: List[OffscreenAgent] = Field(default_factory=list, max_length=2)
+    secret_truths: List[SecretTruth] = Field(default_factory=list)
+    clocks: List[StoryClock] = Field(default_factory=list)
+    offscreen_agents: List[OffscreenAgent] = Field(default_factory=list)
     initial_relationships: List[RelationshipSeed] = Field(default_factory=list, max_length=12)
     initial_items: List[StoryInitItem] = Field(default_factory=list, max_length=30)
 
 class CharacterStateUpdate(BaseModel):
+    event_id: str
     character_id: str = Field(description="The unique id of the character")
     physical_state: Optional[str] = Field(default=None, description="Updated physical condition (e.g. 'Uninjured', 'Bruised', 'Exhausted', 'Bleeding')")
     mental_state: Optional[str] = Field(default=None, description="Updated emotional or cognitive state (e.g. 'Alarmed', 'Relieved', 'Defiant')")
     status: Optional[Literal["active", "unconscious", "dead", "inactive", "archived"]] = None
-    new_memory: Optional[str] = Field(default="", description="Key memory trace/observation the character forms from these events")
 
-class ProseTurnResponse(BaseModel):
+class ContinuityDelta(BaseModel):
+    facts_added: List[str] = Field(default_factory=list)
+    facts_removed: List[str] = Field(default_factory=list)
+    threads_added: List[str] = Field(default_factory=list)
+    threads_removed: List[str] = Field(default_factory=list)
+
+
+class ContinuitySummary(BaseModel):
+    summary: str = Field(min_length=1, max_length=4000)
+
+
+class SceneLocation(BaseModel):
+    event_id: str
+    id: str
+    name: str
+
+
+class ResolverResponse(BaseModel):
     chapter_title: str = Field(default="", max_length=160, description="Current chapter title; keep stable until chapter ends")
     director_plan: str = Field(default="", max_length=6000, description="Updated evolving plot arc: completed milestones, current conflict, plausible next developments; not a predetermined outcome")
     director_notes: str = Field(default="", max_length=4000, description="Updated pacing notes, unresolved decisions and consequences to resolve next")
     world_description: str = Field(default="", max_length=6000, description="Updated world description based only on established developments; retain enduring rules")
     prose: str = Field(min_length=1, description="Finished narrative prose in Finnish")
     events: List[StoryEvent] = Field(description="Authoritative events and the characters who perceived each event")
-    summary: str = Field(min_length=1, max_length=6000, description="Updated cumulative story summary; retain important earlier developments")
     recap_delta: str = Field(default="", max_length=1200, description="One to four sentences describing only this new beat")
-    world_facts: List[str] = Field(default_factory=list, max_length=40)
-    plot_threads: List[str] = Field(default_factory=list, max_length=20)
+    continuity: ContinuityDelta = Field(default_factory=ContinuityDelta)
     decision_character_ids: List[str] = Field(default_factory=list, description="Characters needing an independent important decision next turn")
-    scene_location: Optional[str] = None
+    location: Optional[SceneLocation] = None
     scene_goal: Optional[str] = None
     chapter_end: bool = False
     requires_player_input: bool = False
@@ -159,10 +198,17 @@ class ProseTurnResponse(BaseModel):
     active_character_ids: Optional[List[str]] = Field(default=None, description="List of character IDs who remain active/present in the scene for next turn")
     choices: List[str] = Field(default_factory=list, description="2-4 interesting choice suggestions for next turn")
     spawned_characters: List[StoryInitCharacter] = Field(default_factory=list, description="New characters with unique IDs, never replacements")
-    world_update: Optional[str] = Field(default="", description="Any notable updates to the world state")
-    plot_pivot_needed: Optional[bool] = Field(default=False, description="True if director detects plot direction change")
-    plot_pivot_note: Optional[str] = Field(default="", description="Note explaining plot change")
+    truth_access_updates: List[TruthAccessUpdate] = Field(default_factory=list, description="Update obsolete discovery routes when evidence moves or access is destroyed; do not alter the secret fact")
+    state_changes: List[StateChange] = Field(default_factory=list, description="Realized consequences for existing items, relationships and character locations; never pending intentions")
+    bible_additions: StoryBibleResponse = Field(default_factory=StoryBibleResponse)
     image_prompt: Optional[str] = Field(default="", description="English image generation prompt for illustration")
+
+
+class ProseTurnResponse(ResolverResponse):
+    summary: str = ""
+    world_facts: List[str] = Field(default_factory=list)
+    plot_threads: List[str] = Field(default_factory=list)
+    scene_location: Optional[str] = None
 
     @field_validator("summary", mode="before")
     @classmethod
@@ -171,20 +217,15 @@ class ProseTurnResponse(BaseModel):
             return value[:5997].rsplit(" ", 1)[0] + "..."
         return value
 
-class TurnPlanResponse(BaseModel):
+class PlannerResponse(BaseModel):
     events: List[StoryEvent] = Field(default_factory=list)
-    character_state_updates: List[CharacterStateUpdate] = Field(default_factory=list)
-    spawned_characters: List[StoryInitCharacter] = Field(default_factory=list)
-    active_character_ids: List[str]
     decision_character_ids: List[str]
-    scene_location: Optional[str] = None
-    scene_goal: str = Field(min_length=1, max_length=2000)
     direction: str = Field(min_length=1, max_length=4000)
-    requires_player_input: bool = False
     reveals: List[RevealDecision] = Field(default_factory=list)
     clock_ticks: List[ClockTick] = Field(default_factory=list)
     offscreen_moves: Dict[str, str] = Field(default_factory=dict)
     state_changes: List[StateChange] = Field(default_factory=list)
+    bible_additions: StoryBibleResponse = Field(default_factory=StoryBibleResponse)
 
 
 class CharacterDecisionResponse(BaseModel):
@@ -200,15 +241,16 @@ class CharacterDecisionResponse(BaseModel):
     importance: int = Field(ge=1, le=10)
     belief_updates: List[str] = Field(default_factory=list)
     goal_update: Optional[str] = None
-    internal_monologue: str = Field(default="", description="Private thoughts, emotions and motivations of the character")
-    action_and_speech: str = Field(default="", description="Compatibility representation of the character's attempted action and speech")
 
-class PlayerViewResponse(BaseModel):
+class PlayerViewDraft(BaseModel):
     prose: str = Field(min_length=1, max_length=12000, description="Limited viewpoint story prose using only supplied private knowledge and perceived events")
-    recap: str = Field(default="", description="Compatibility cumulative recap")
     recap_delta: str = Field(default="", max_length=1200, description="One to four new viewpoint-limited sentences")
     chapter_title: str = Field(min_length=1, max_length=160, description="Chapter title that reveals no unknown secret")
     choices: List[str] = Field(default_factory=list, max_length=5, description="Possible actions based only on what this character knows; never in prose")
+
+
+class PlayerViewResponse(PlayerViewDraft):
+    recap: str = ""
 
     @field_validator("recap", mode="before")
     @classmethod

@@ -14,7 +14,7 @@ from dotenv import set_key
 from pydantic import BaseModel, Field
 
 from config import settings
-from core.types import StoryInitRequest, AdvanceStoryRequest, StoryMeta, TurnResponse
+from core.types import StoryInitRequest, QuickStoryRequest, AdvanceStoryRequest, StoryMeta, TurnResponse
 from core.llm_client import LLMClient
 from core.prompt_loader import prompt_loader
 from core.profile_store import KEY_FIELDS, load_profiles, save_profile_keys
@@ -22,7 +22,7 @@ from engine.story_engine import StoryEngine
 import database.db as db
 from database import turn_store
 
-logger = logging.getLogger("tarinamoottori.api")
+logger = logging.getLogger("uvicorn.error.tarinamoottori.api")
 
 app = FastAPI(title="Tarinamoottori API", version="2.0.0")
 
@@ -205,6 +205,17 @@ async def create_story(req: StoryInitRequest):
         logger.exception(f"Virhe uuden tarinan luonnissa: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/stories/quick")
+async def quick_create_story(req: QuickStoryRequest):
+    try:
+        logger.info("Pikaluonti alkaa: mode=%s", req.mode or "auto")
+        result = await engine.quick_create_story(req)
+    except Exception:
+        logger.exception("Pikaluonti epäonnistui")
+        raise
+    return {"status": "success", "data": result}
+
+
 @app.get("/api/stories/{story_id}")
 async def get_story_details(story_id: str):
     """Hakee tarinan koko tilan: metatiedot, hahmot, aktiivisen kohtauksen ja kaikki vuorot."""
@@ -266,9 +277,9 @@ class BibleOffscreenAgent(BaseModel):
     visible_to: List[str] = Field(default_factory=list)
 
 class BibleUpdateRequest(BaseModel):
-    secret_truths: List[BibleTruth] = Field(max_length=30)
-    clocks: List[BibleClock] = Field(max_length=10)
-    offscreen_agents: List[BibleOffscreenAgent] = Field(max_length=10)
+    secret_truths: List[BibleTruth] = Field(default_factory=list)
+    clocks: List[BibleClock] = Field(default_factory=list)
+    offscreen_agents: List[BibleOffscreenAgent] = Field(default_factory=list)
     expected_revision: Optional[int] = Field(default=None, ge=0)
 
 @app.put("/api/stories/{story_id}/bible")
