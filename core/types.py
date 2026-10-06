@@ -123,6 +123,7 @@ class AdvanceStoryRequest(BaseModel):
     request_id: Optional[str] = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")
     scene_id: Optional[int] = None
     custom_guidance: Optional[str] = None
+    extra_reaction_cycle: bool = Field(default=False, strict=True)
     temperature: Optional[float] = 0.85
 
 class TurnResponse(BaseModel):
@@ -143,3 +144,5 @@ class TurnResponse(BaseModel):
     requires_player_input: bool = False
     player_view_status: Optional[str] = None
     watchdog_note: Optional[str] = None
+    followup_request_id: Optional[str] = None
+    extra_reaction_cycles: int = Field(default=0, ge=0, le=1)

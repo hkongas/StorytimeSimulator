@@ -72,7 +72,7 @@ async def run_turn_job(story_id: str, req: AdvanceStoryRequest, job: dict):
     try:
         async for event in engine.advance_turn_streaming(
             story_id, req.user_input, req.mode, req.custom_guidance,
-            req.private_intention, req.request_id
+            req.private_intention, req.request_id, req.extra_reaction_cycle
         ):
             if event["type"] == "phase":
                 job["message"] = event["message"]
@@ -592,7 +592,8 @@ async def advance_story(story_id: str, req: AdvanceStoryRequest):
             mode=req.mode,
             director_guidance=req.custom_guidance or (req.user_input if req.mode == "director" else None),
             private_intention=req.private_intention,
-            request_id=req.request_id
+            request_id=req.request_id,
+            extra_reaction_cycle=req.extra_reaction_cycle
         )
         logger.info(f"Tarinaa '{story_id}' edistetty: vuoro {turn_response.turn_index}")
         return {"status": "success", "data": turn_response}
@@ -625,7 +626,8 @@ async def websocket_story_live(websocket: WebSocket, story_id: str):
                 mode=mode,
                 director_guidance=custom_guidance or (user_input if mode == "director" else None),
                 private_intention=data.get("private_intention"),
-                request_id=data.get("request_id")
+                request_id=data.get("request_id"),
+                extra_reaction_cycle=data["extra_reaction_cycle"]
             ):
                 await websocket.send_json(event)
 

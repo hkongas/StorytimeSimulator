@@ -316,7 +316,20 @@ async def get_receipt(story_id: str, request_id: str, fingerprint: str | None = 
         raise TurnConflictError("Vuoro on kumottu. Kayta uutta pyyntotunnistetta.")
     if row and fingerprint is not None and row[0] != fingerprint:
         raise TurnConflictError("Samaa pyyntotunnistetta ei voi kayttaa eri sisallolle.")
-    return TurnResponse.model_validate_json(row[1]) if row else None
+    response = TurnResponse.model_validate_json(row[1]) if row else None
+    if response and response.followup_request_id:
+        if response.followup_request_id == request_id:
+            raise TurnConflictError("Virheellinen lisävuoron kuitti.")
+        followup = await get_receipt(story_id, response.followup_request_id)
+        if followup:
+            return followup
+    return response
+
+
+async def get_event_descriptions(story_id: str) -> set[str]:
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute("SELECT description FROM events") as cursor:
+            return {row[0].strip().casefold() for row in await cursor.fetchall()}
 
 
 async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
@@ -427,8 +440,8 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                 clock_rows = await cursor.fetchall()
             for (clock_id,) in clock_rows:
                 await connection.execute(
-                    "UPDATE clocks SET remaining_beats = MAX(0, remaining_beats - 1 - ?) WHERE id = ?",
-                    (ticks.get(clock_id, 0), clock_id)
+                    "UPDATE clocks SET remaining_beats = MAX(0, remaining_beats - ? - ?) WHERE id = ?",
+                    (0 if audit.get("skip_clock_tick") else 1, ticks.get(clock_id, 0), clock_id)
                 )
             for agent_id, move in plan.get("offscreen_moves", {}).items():
                 await connection.execute(

@@ -191,6 +191,13 @@ class SceneLocation(BaseModel):
     name: str
 
 
+class PendingReactionDecision(BaseModel):
+    decision_kind: Literal["meaningful_choice"]
+    event_id: str = Field(description="ID of a material new resolver event that caused this unresolved decision")
+    character_id: str
+    decision: str = Field(min_length=1, max_length=1200, description="The unresolved meaningful choice, not a possible reaction, routine, or already completed action")
+
+
 class ResolverResponse(BaseModel):
     chapter_title: str = Field(default="", max_length=160, description="Current chapter title; keep stable until chapter ends")
     director_plan: str = Field(default="", max_length=6000, description="Updated evolving plot arc: completed milestones, current conflict, plausible next developments; not a predetermined outcome")
@@ -201,6 +208,8 @@ class ResolverResponse(BaseModel):
     recap_delta: str = Field(default="", max_length=1200, description="One to four sentences describing only this new beat")
     continuity: ContinuityDelta = Field(default_factory=ContinuityDelta)
     decision_character_ids: List[str] = Field(default_factory=list, description="Characters needing an independent important decision next turn")
+    pending_reaction_decisions: List[PendingReactionDecision] = Field(default_factory=list, max_length=20)
+    scene_stop: bool = Field(default=False, description="Stop at a meaningful scene boundary rather than automatically continuing")
     location: Optional[SceneLocation] = None
     scene_goal: Optional[str] = None
     chapter_end: bool = False

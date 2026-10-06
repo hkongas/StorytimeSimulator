@@ -59,3 +59,32 @@ if (process.argv.includes('--check-timestamps')) {
     assert.match(app, /class="memory-list"[^\n]*tabindex="0" aria-label=/);
   });
 }
+
+if (!process.argv.includes('--check-timestamps')) test('extra reaction opt-in is independent of roleplay auto-continue and survives request retry', async () => {
+  const turns = fs.readFileSync(path.join(__dirname, '..', 'web', 'static', 'turns.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'static', 'index.html'), 'utf8');
+  const checkbox = html.match(/<input[^>]+id="extraReactionCycle"[^>]*>/)[0];
+  assert.doesNotMatch(checkbox, /checked|hidden/);
+  assert.ok(html.indexOf('id="extraReactionCycle"') < html.indexOf('id="autoControls"'));
+  for (const mode of ['novel', 'simulation', 'roleplay']) {
+    for (const enabled of [false, true]) {
+      const elements = new Map();
+      const document = {getElementById(id) {
+        if (!elements.has(id)) elements.set(id, {value: '', checked: id === 'extraReactionCycle' && enabled});
+        return elements.get(id);
+      }};
+      let submitted;
+      const context = vm.createContext({document, sessionStorage: {getItem() {return null;}},
+        addEventListener() {}, crypto: {randomUUID() {return 'request';}}, Date, currentStoryId: 'story', currentMode: mode,
+        renderChoices() {}, showTurnProgress() {}, savePendingTurns() {}, syncTurnControls() {}});
+      vm.runInContext(turns, context);
+      vm.runInContext('savePendingTurns = () => {}; syncTurnControls = () => {}; showTurnProgress = () => {}; submitPendingTurn = async record => { submittedRecord = record; };', context);
+      await context.advanceStory();
+      submitted = context.submittedRecord;
+      assert.equal(submitted.payload.extra_reaction_cycle, enabled);
+      assert.equal(submitted.payload.mode, mode);
+      document.getElementById('extraReactionCycle').checked = !enabled;
+      assert.equal(submitted.payload.extra_reaction_cycle, enabled);
+    }
+  }
+});

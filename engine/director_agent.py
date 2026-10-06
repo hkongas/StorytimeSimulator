@@ -427,6 +427,8 @@ Reader wish: {reader_wish or 'none'}
 """
         if director_guidance:
             user_content += f"\n[DIRECTOR OVERRIDE / GUIDANCE]: {director_guidance}\n"
+        if turn_plan and turn_plan.get("reaction_decisions"):
+            system_prompt += "\nEXTRA REACTION (1/1): Only supplied AI intentions are fresh. Resolve their reaction to the referenced committed event. Never replay historical player actions, invent a player action (including waiting), repeat world intervention or advance clocks. Stop at the next meaningful player decision or scene boundary."
         if turn_plan:
             user_content = "[ACCEPTED PRE-DECISION PLAN]\n" + json.dumps(turn_plan, ensure_ascii=False) + "\n" + user_content
             system_prompt += "\nThe plan's events already happened before character intentions. Do not repeat or undo them. Honor its direction and resolve only the subsequent actions."

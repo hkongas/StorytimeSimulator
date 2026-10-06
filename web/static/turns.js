@@ -260,7 +260,7 @@ function syncTurnControls() {
   document.getElementById('readingView').disabled = blocked || currentMode === 'roleplay';
   document.getElementById('showRecaps').disabled = blocked;
   for (const id of ['advanceBtn', 'playerActBtn']) document.getElementById(id).disabled = blocked;
-  for (const id of ['readerInput', 'playerInput', 'privateIntention', 'worldIntervention']) {
+  for (const id of ['readerInput', 'playerInput', 'privateIntention', 'worldIntervention', 'extraReactionCycle']) {
     document.getElementById(id).disabled = blocked;
   }
   document.querySelectorAll('.choice-btn, .edit-turn-btn').forEach(button => button.disabled = blocked);
@@ -282,7 +282,8 @@ async function advanceStory() {
     request_id: crypto.randomUUID(), mode: currentMode,
     user_input: document.getElementById(inputId).value.trim() || null,
     private_intention: currentMode === 'roleplay' ? document.getElementById('privateIntention').value.trim() || null : null,
-    custom_guidance: document.getElementById('worldIntervention').value.trim() || null
+    custom_guidance: document.getElementById('worldIntervention').value.trim() || null,
+    extra_reaction_cycle: document.getElementById('extraReactionCycle').checked
   }};
   pendingTurns[storyId] = record;
   record.startedAt = Date.now();
