@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Optional, AsyncIterator
 from config import settings
 from core.llm_client import LLMClient
 from core.types import StoryMeta, Character, Scene, SceneTurn, ChronicleEntry
-from core.schemas import StoryInitResponse, ResolverResponse, PlannerResponse, PlayerViewDraft, PlayerViewResponse, ContinuitySummary, pydantic_to_json_schema
+from core.schemas import StoryInitResponse, ResolverResponse, PlannerResponse, PlayerViewDraft, PlayerViewResponse, ContinuitySummary, CharacterCatchup, pydantic_to_json_schema
 from core.prompt_loader import prompt_loader
 from engine.turn_contract import merge_continuity
 import database.db as db
@@ -272,6 +272,27 @@ Deliver the sensory perception briefing directly for '{character.name}'.
             json_schema=pydantic_to_json_schema(PlannerResponse, "turn_plan")
         )
         return PlannerResponse.model_validate(data)
+
+    async def create_character_catchup(self, story_id: str, character: Character, meta: StoryMeta) -> dict:
+        from database import turn_store
+        memories = await db.get_character_memories(story_id, character.id, limit=30)
+        intention = await turn_store.get_last_intention(story_id, character.id)
+        data = {
+            "character": {"name": character.name, "physical_state": character.physical_state,
+                          "mental_state": character.mental_state},
+            "memories": [{"type": memory.memory_type, "content": memory.content} for memory in memories],
+            "observation": await turn_store.get_observation(story_id, character.id),
+            "own_intention": {key: intention.get(key, "") for key in ("action", "speech", "private_thought")},
+        }
+        system = prompt_loader.compose_system_prompt("director/character_catchup", tone_profile=meta.tone_profile,
+                                                     custom_tone_override=meta.custom_tone_override)
+        result = await self.llm.json_completion(
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": json.dumps(data, ensure_ascii=False)}],
+            role="director", story_id=story_id, temperature=settings.PLAYER_VIEW_TEMPERATURE,
+            max_tokens=settings.PLAYER_VIEW_MAX_TOKENS, reasoning_effort=settings.PLAYER_VIEW_REASONING_EFFORT,
+            json_schema=pydantic_to_json_schema(CharacterCatchup, "character_catchup"))
+        return CharacterCatchup.model_validate(result).model_dump()
 
     async def create_player_view(self, story_id, character, outcome, intention, runtime, location, tone_profile,
                                  custom_tone_override, before_turn_id=None):

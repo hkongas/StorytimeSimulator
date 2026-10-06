@@ -123,6 +123,41 @@ async def get_latest_player_view(story_id: str, character_id: str, before_turn_i
     return json.loads(row[0]) if row and row[0] else {}
 
 
+async def get_character_catchups(story_id: str) -> dict:
+    await db.init_story_db(story_id)
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute(
+            "SELECT character_id, turn_id, view_json FROM player_view_artifacts "
+            "WHERE status = 'catchup_ready' AND turn_id = (SELECT MAX(id) FROM scene_turns WHERE branch_id = 'main')"
+        ) as cursor:
+            rows = await cursor.fetchall()
+    revision = await get_revision(story_id)
+    return {character_id: {**json.loads(view_json), "turn_id": turn_id} for character_id, turn_id, view_json in rows
+            if json.loads(view_json).get("revision") == revision}
+
+
+async def save_character_catchup(story_id: str, character_id: str, turn_id: int, view: dict, expected_revision: int):
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                if (await cursor.fetchone())[0] != expected_revision:
+                    raise TurnConflictError("Tarina muuttui kertauksen aikana. Yritä uudelleen.")
+            async with connection.execute("SELECT status FROM player_view_artifacts WHERE turn_id = ? AND character_id = ?",
+                                          (turn_id, character_id)) as cursor:
+                existing = await cursor.fetchone()
+            if existing and existing[0] != "catchup_ready":
+                raise TurnConflictError("Vuorolle on jo näkökulma tai keskeneräinen näkökulmatyö.")
+            await connection.execute(
+                "INSERT INTO player_view_artifacts (turn_id, character_id, status, view_json) VALUES (?, ?, 'catchup_ready', ?) "
+                "ON CONFLICT(turn_id, character_id) DO UPDATE SET view_json = excluded.view_json, updated_at = CURRENT_TIMESTAMP",
+                (turn_id, character_id, json.dumps({**view, "revision": expected_revision}, ensure_ascii=False)))
+            await connection.commit()
+        except BaseException:
+            await connection.rollback()
+            raise
+
+
 async def get_player_view_retry_context(story_id: str, turn_id: int, character_id: str) -> dict:
     await db.init_story_db(story_id)
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
@@ -214,7 +249,7 @@ async def get_reading_metadata(story_id: str) -> dict:
         for (artifact_turn, character_id), artifact in artifacts.items():
             if artifact_turn == str(turn_id):
                 statuses[character_id] = artifact["status"]
-                if artifact["view_json"]:
+                if artifact["view_json"] and artifact["status"] == "view_ready":
                     views[character_id] = json.loads(artifact["view_json"])
         result[str(turn_id)] = {"chapter_id": scene_id, "chapter_title": outcome.get("chapter_title", ""),
                                "recap": outcome.get("summary", ""), "player_views": views,

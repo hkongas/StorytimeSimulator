@@ -81,6 +81,14 @@ const translations = {
     bibleTruths: "Salaiset totuudet",
     bibleClocks: "Kellot (paine)",
     bibleAgents: "Kuvaruudun ulkopuoliset toimijat",
+    bibleWorldHeading: "Esineet ja suhteet",
+    bibleItems: "Esineet",
+    bibleRelationships: "Hahmojen väliset suhteet (suunta: lähtöhahmo → kohde)",
+    bibleHolder: "Haltija",
+    bibleUnknownPlacement: "Haltijaa tai paikkaa ei tiedetä.",
+    bibleAttitude: "Asenne",
+    bibleTrust: "Luottamus",
+    bibleWorldReadOnly: "Kertojan maailmantila: esineet ja suhteet päivittyvät tarinan tapahtumista. Vain luku; hahmot eivät näe näitä tietoja.",
     bibleState: "Tila",
     bibleState_hidden: "Piilossa",
     bibleState_hinted: "Vihjattu",
@@ -257,6 +265,14 @@ const translations = {
     bibleTruths: "Secret truths",
     bibleClocks: "Clocks (pressure)",
     bibleAgents: "Offscreen agents",
+    bibleWorldHeading: "Items and relationships",
+    bibleItems: "Items",
+    bibleRelationships: "Character relationships (direction: source → target)",
+    bibleHolder: "Holder",
+    bibleUnknownPlacement: "No known holder or location.",
+    bibleAttitude: "Attitude",
+    bibleTrust: "Trust",
+    bibleWorldReadOnly: "Narrator's world state: items and relationships update through story events. Read-only; characters never see this information.",
     bibleState: "State",
     bibleState_hidden: "Hidden",
     bibleState_hinted: "Hinted",
@@ -406,4 +422,8 @@ function applyTranslations() {
       el.title = t(key);
     }
   });
+
+  if (typeof renderBibleWorld === "function" && typeof currentStoryData !== "undefined" && currentStoryData) {
+    renderBibleWorld(currentStoryData.bible);
+  }
 }

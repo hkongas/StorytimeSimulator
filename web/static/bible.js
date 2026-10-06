@@ -1,4 +1,4 @@
-// Kertojan salaiset totuudet, kellot ja kuvaruudun ulkopuoliset toimijat sekä juonilangat.
+// Kertojan salaiset tapahtumat, esineet, suhteet sekä juonilangat.
 
 let bibleDraft = null;
 let bibleDraftStoryId = null;
@@ -18,6 +18,7 @@ function renderBible(data) {
     : t("bibleNone");
   document.getElementById("plotThreadsDisplay").textContent = list(runtime.plot_threads);
   document.getElementById("worldFactsDisplay").textContent = list(runtime.world_facts);
+  renderBibleWorld(data.bible);
   if (bibleDraft && bibleDraftStoryId !== currentStoryId) stopBibleEdit();
   if (bibleDraft) return;
   renderBibleView(data.bible);
@@ -64,6 +65,34 @@ function renderBibleView(bible) {
       </div>`).join("")}`;
 }
 
+function renderBibleWorld(bible) {
+  const container = document.getElementById("bibleWorldDisplay");
+  container.setAttribute("aria-label", t("bibleWorldHeading"));
+  const items = bible?.items || [];
+  const relationships = bible?.relationships || [];
+  const locationName = id => bible?.locations?.find(location => location.id === id)?.name || id;
+  const empty = `<p class="text-muted">${bibleEscape(t("bibleNone"))}</p>`;
+  container.innerHTML = `
+    <p class="bible-warning">${bibleEscape(t("bibleWorldReadOnly"))}</p>
+    <h4 class="bible-subheading">${bibleEscape(t("bibleItems"))}</h4>
+    ${items.length ? items.map(item => `
+      <div class="bible-card">
+        <div class="bible-card-head"><strong>${bibleEscape(item.name)}</strong> <code>${bibleEscape(item.id)}</code></div>
+        ${item.state ? `<p>${bibleEscape(t("bibleState"))}: ${bibleEscape(item.state)}</p>` : ""}
+        ${item.holder_character_id ? `<p class="bible-meta">${bibleEscape(t("bibleHolder"))}: ${bibleEscape(bibleCharacterName(item.holder_character_id))}</p>` : ""}
+        ${item.location_id ? `<p class="bible-meta">${bibleEscape(t("bibleLocation"))}: ${bibleEscape(locationName(item.location_id))}</p>` : ""}
+        ${!item.holder_character_id && !item.location_id ? `<p class="bible-meta">${bibleEscape(t("bibleUnknownPlacement"))}</p>` : ""}
+      </div>`).join("") : empty}
+    <h4 class="bible-subheading">${bibleEscape(t("bibleRelationships"))}</h4>
+    ${relationships.length ? relationships.map(relation => `
+      <div class="bible-card">
+        <p><strong>${bibleEscape(bibleCharacterName(relation.character_a))} → ${bibleEscape(bibleCharacterName(relation.character_b))}</strong></p>
+        ${relation.attitude ? `<p>${bibleEscape(t("bibleAttitude"))}: ${bibleEscape(relation.attitude)}</p>` : ""}
+        ${relation.trust != null ? `<p class="bible-meta">${bibleEscape(t("bibleTrust"))}: ${bibleEscape(relation.trust)} (−1 … 1)</p>` : ""}
+        ${relation.summary ? `<p>${bibleEscape(relation.summary)}</p>` : ""}
+      </div>`).join("") : empty}`;
+}
+
 function startBibleEdit() {
   if (!currentStoryData) return;
   bibleDraft = JSON.parse(JSON.stringify(currentStoryData.bible || {secret_truths: [], clocks: [], offscreen_agents: []}));
@@ -81,6 +110,7 @@ function stopBibleEdit() {
   document.getElementById("bibleDisplay").classList.remove("hidden");
   document.getElementById("editBibleBtn").classList.remove("hidden");
   renderBibleView(currentStoryData?.bible);
+  renderBibleWorld(currentStoryData?.bible);
 }
 
 function bibleField(group, index, field, label, value, {multiline = false, type = "text"} = {}) {
@@ -213,7 +243,8 @@ async function saveBible() {
       const detail = Array.isArray(result.detail) ? t("bibleInvalid") : result.detail;
       throw new Error(detail || t("bibleSaveFailed"));
     }
-    currentStoryData.bible = result.bible;
+    // The PUT endpoint edits secrets only; older responses omit read-only world state.
+    currentStoryData.bible = {...currentStoryData.bible, ...result.bible};
     currentStoryData.revision = result.revision;
     stopBibleEdit();
   } catch (err) {

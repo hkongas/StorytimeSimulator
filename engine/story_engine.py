@@ -35,6 +35,33 @@ class StoryEngine:
             return any(lock.locked() for lock in self._locks.values())
         return story_id in self._locks and self._locks[story_id].locked()
 
+    async def create_character_catchup(self, story_id: str, character_id: str, expected_revision: int) -> dict:
+        async with self._locks.setdefault(story_id, asyncio.Lock()):
+            revision = await turn_store.get_revision(story_id)
+            if revision != expected_revision:
+                raise turn_store.TurnConflictError("Tarina muuttui. Lataa se uudelleen.")
+            character = await db.get_character(story_id, character_id)
+            scene = await db.get_active_scene(story_id)
+            if not character or not character.is_player_controlled or character.status != "active" or not scene or character_id not in scene.active_character_ids:
+                raise ValueError("Kertaus voidaan muodostaa vain aktiivisessa kohtauksessa olevalle pelaajahahmolle.")
+            turns = await db.get_all_story_turns(story_id)
+            if not turns or turns[-1].id is None:
+                raise ValueError("Tarinalta puuttuu viimeisin vuoro.")
+            turn_id = turns[-1].id
+            metadata = await turn_store.get_reading_metadata(story_id)
+            entry = metadata.get(str(turn_id), {})
+            if entry.get("player_views", {}).get(character_id) or entry.get("player_view_status", {}).get(character_id) in {"view_pending", "view_failed"}:
+                raise ValueError("Viimeiselle vuorolle on jo hahmon näkökulma tai uusittava näkökulmatyö.")
+            cached = (await turn_store.get_character_catchups(story_id)).get(character_id)
+            if cached:
+                return {"status": "catchup_ready", "catchup": cached}
+            meta = await db.get_story_meta(story_id)
+            if not meta:
+                raise ValueError("Tarinaa ei löydy.")
+            view = await self.director.create_character_catchup(story_id, character, meta)
+            await turn_store.save_character_catchup(story_id, character_id, turn_id, view, revision)
+            return {"status": "catchup_ready", "catchup": {**view, "turn_id": turn_id}}
+
     async def retry_player_view(self, story_id: str, turn_id: int, character_id: str) -> dict:
         async with self._locks.setdefault(story_id, asyncio.Lock()):
             context = await turn_store.get_player_view_retry_context(story_id, turn_id, character_id)

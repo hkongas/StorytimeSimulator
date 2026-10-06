@@ -3,6 +3,17 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator
 
 
+class CharacterCatchup(BaseModel):
+    recap: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("recap")
+    @classmethod
+    def nonempty_recap(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Recap must not be blank")
+        return value.strip()
+
+
 class SecretTruth(BaseModel):
     id: str
     fact: str

@@ -352,6 +352,29 @@ function renderStoryView(data, preserveReadingPosition = false) {
     renderChoices(lastChoices || []);
   }
 
+  if (limited && selectedPlayer && data.turns?.length) {
+    const latest = data.turns[data.turns.length - 1];
+    const metadata = data.reading_metadata?.[latest.id] || {};
+    const catchup = data.character_catchups?.[selectedPlayer.id];
+    if (catchup) {
+      const note = document.createElement('section');
+      note.className = 'reading-recap';
+      const title = document.createElement('h3');
+      title.textContent = `${selectedPlayer.name}: tilannekertaus`;
+      const text = document.createElement('p');
+      text.textContent = catchup.recap;
+      note.append(title, text);
+      stream.appendChild(note);
+    } else if (!metadata.player_views?.[selectedPlayer.id] && !['view_pending', 'view_failed'].includes(metadata.player_view_status?.[selectedPlayer.id])) {
+      const button = document.createElement('button');
+      button.className = 'btn btn-secondary';
+      button.textContent = 'Muodosta hahmon tilannekertaus (mallikutsu)';
+      button.disabled = isGenerating;
+      button.onclick = () => createCharacterCatchup(selectedPlayer.id, button);
+      stream.appendChild(button);
+    }
+  }
+
   const writingArea = document.createElement('div');
   writingArea.className = 'story-writing-area';
   writingArea.title = 'Tuplaklikkaa kirjoittaaksesi oman jatkokappaleen';
@@ -870,6 +893,32 @@ async function saveCharacterEdits() {
 }
 
 // Pelattavan hahmon vaihto
+let catchupGenerating = false;
+
+async function createCharacterCatchup(charId, button) {
+  if (!currentStoryId || isGenerating || catchupGenerating) return;
+  if (!confirm('Muodostetaan lyhyt kertaus hahmon omista tiedoista yhdellä mallikutsulla. Kutsu voi olla maksullinen. Vanhat vuorot eivät muutu. Jatketaanko?')) return;
+  const storyId = currentStoryId;
+  catchupGenerating = true;
+  button.disabled = true;
+  button.textContent = 'Muodostetaan tilannekertausta…';
+  try {
+    const response = await fetch(`/api/stories/${encodeURIComponent(storyId)}/characters/${encodeURIComponent(charId)}/catchup`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({expected_revision: currentStoryData.revision})
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Tilannekertauksen muodostus epäonnistui.');
+    if (currentStoryId === storyId) await loadStory(storyId);
+  } catch (error) {
+    if (currentStoryId === storyId) alert(error.message);
+  } finally {
+    catchupGenerating = false;
+    button.disabled = false;
+    button.textContent = 'Muodosta hahmon tilannekertaus (mallikutsu)';
+  }
+}
+
 async function makeCharacterPlayer(charId) {
   if (!currentStoryId) return;
 
@@ -881,6 +930,7 @@ async function makeCharacterPlayer(charId) {
     const data = await res.json();
     currentStoryData.characters = data.all_characters;
     
+    await loadStory(currentStoryId);
     setMode("player");
     filterAndRenderCharacters();
   } catch (err) {

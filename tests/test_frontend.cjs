@@ -35,6 +35,15 @@ if (process.argv.includes('--check-timestamps')) {
     });
   }
 
+  test('catchup is optional and remains separate from historical prose', () => {
+    const app = fs.readFileSync(appPath, 'utf8');
+    assert.match(app, /data\.character_catchups\?\.\[selectedPlayer\.id\]/);
+    assert.match(app, /text\.textContent = catchup\.recap/);
+    assert.match(app, /if \(!confirm\(/);
+    assert.match(app, /expected_revision: currentStoryData\.revision/);
+    assert.match(app, /if \(currentStoryId === storyId\) await loadStory\(storyId\)/);
+  });
+
   test('reading controls and stable tail remain outside generated prose', () => {
     const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'static', 'index.html'), 'utf8');
     const css = fs.readFileSync(path.join(__dirname, '..', 'web', 'static', 'style.css'), 'utf8');

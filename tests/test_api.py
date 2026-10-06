@@ -175,6 +175,52 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         settings.BASE_DIR = self.original_base
         self.temporary.cleanup()
 
+    async def test_character_catchup_is_private_cached_and_not_historical_prose(self):
+        import json
+        from database import turn_store
+        from unittest.mock import patch
+        response = await self.client.post('/api/stories', json={
+            'title': 'Catchup', 'genre': 'Everyday', 'user_idea': 'A quiet cafe', 'user_role': 'reader'})
+        story_id = response.json()['data']['story_id']
+        endpoint = f'/api/stories/{story_id}'
+        details = (await self.client.get(endpoint)).json()
+        character_id = details['characters'][0]['id']
+        await self.client.post(endpoint + f'/characters/{character_id}/set_player')
+        details = (await self.client.get(endpoint)).json()
+        revision = details['revision']
+        expected_observation = await turn_store.get_observation(story_id, character_id)
+        original = engine.llm.json_completion
+        captured = []
+
+        async def catchup_model(*args, **kwargs):
+            if kwargs.get('json_schema', {}).get('json_schema', {}).get('name') == 'character_catchup':
+                captured.append(kwargs['messages'])
+                return {'recap': 'A character-specific recap.'}
+            return await original(*args, **kwargs)
+
+        url = endpoint + f'/characters/{character_id}/catchup'
+        with patch.object(engine.director.llm, 'json_completion', side_effect=catchup_model):
+            stale = await self.client.post(url, json={'expected_revision': revision - 1})
+            self.assertEqual(stale.status_code, 409)
+            result = await self.client.post(url, json={'expected_revision': revision})
+            self.assertEqual(result.status_code, 200, result.text)
+            repeat = await self.client.post(url, json={'expected_revision': revision})
+            self.assertEqual(repeat.status_code, 200, repeat.text)
+        self.assertEqual(len(captured), 1)
+        context = json.loads(captured[0][1]['content'])
+        self.assertEqual(context['observation'], expected_observation)
+        self.assertNotIn('world_lore', context)
+        self.assertNotIn('director_prose', context)
+        self.assertNotIn('secret_motive', context['character'])
+        self.assertEqual(set(context['own_intention']), {'action', 'speech', 'private_thought'})
+        refreshed = (await self.client.get(endpoint)).json()
+        self.assertEqual(refreshed['turns'], details['turns'])
+        self.assertEqual(refreshed['revision'], revision)
+        self.assertEqual(refreshed['character_catchups'][character_id]['recap'], 'A character-specific recap.')
+        self.assertFalse(any(character_id in entry.get('player_views', {}) for entry in refreshed['reading_metadata'].values()))
+        await self.client.post(endpoint + '/meta', json={'director_notes': 'Changed'})
+        self.assertEqual(await turn_store.get_character_catchups(story_id), {})
+
     async def test_quick_story_creates_named_story_and_honors_options(self):
         from database import db
         from unittest.mock import patch
@@ -411,6 +457,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         await engine.advance_turn(sid, mode="novel")
         details = (await self.client.get(endpoint)).json()
         bible = details["bible"]
+        from database import db
+        world = await db.get_planning_world(sid)
+        for key in ('items', 'relationships', 'locations'):
+            self.assertEqual(bible[key], world[key])
         self.assertEqual(len(bible["secret_truths"]), 4)
         payload = {
             "secret_truths": [{**truth, "fact": "MUOKATTU" if index == 0 else truth["fact"],
@@ -423,6 +473,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client.put(endpoint + "/bible", json=payload)
         self.assertEqual(result.status_code, 200)
         saved = result.json()["bible"]
+        for key in ('items', 'relationships', 'locations'):
+            self.assertEqual(saved[key], world[key])
         self.assertEqual(saved["secret_truths"][0]["fact"], "MUOKATTU")
         self.assertEqual(saved["secret_truths"][0]["reveal_state"], "revealed")
         self.assertIsNotNone(saved["secret_truths"][0]["revealed_at_turn"])

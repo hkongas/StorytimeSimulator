@@ -234,7 +234,8 @@ async def get_story_details(story_id: str):
     runtime = await turn_store.get_runtime(story_id)
     can_undo = await turn_store.can_rollback(story_id)
     reading_metadata = await turn_store.get_reading_metadata(story_id)
-    bible = await db.get_story_bible(story_id)
+    bible = {**await db.get_story_bible(story_id), **await db.get_planning_world(story_id)}
+    character_catchups = await turn_store.get_character_catchups(story_id)
     if revision != await turn_store.get_revision(story_id):
         raise turn_store.TurnConflictError("Tarina muuttui latauksen aikana. Lataa se uudelleen.")
 
@@ -245,6 +246,7 @@ async def get_story_details(story_id: str):
         "active_scene": active_scene,
         "turns": turns,
         "reading_metadata": reading_metadata,
+        "character_catchups": character_catchups,
         "chronicle": chronicle,
         "runtime": runtime,
         "bible": bible,
@@ -306,7 +308,8 @@ async def update_story_bible(story_id: str, req: BibleUpdateRequest):
         story_id, truths, [clock.model_dump() for clock in req.clocks],
         [agent.model_dump() for agent in req.offscreen_agents], expected_revision=req.expected_revision
     )
-    return {"status": "success", "bible": await db.get_story_bible(story_id), "revision": await turn_store.get_revision(story_id)}
+    bible = {**await db.get_story_bible(story_id), **await db.get_planning_world(story_id)}
+    return {"status": "success", "bible": bible, "revision": await turn_store.get_revision(story_id)}
 
 class TurnProseUpdate(BaseModel):
     prose: str = Field(min_length=1, max_length=200000)
@@ -358,6 +361,22 @@ async def edit_turn(story_id: str, turn_id: int, req: TurnProseUpdate):
         raise HTTPException(422, "Automaattista tilasynkronointia ei ole vielä toteutettu. Tekstiä ei tallennettu.")
     await turn_store.update_turn_prose(story_id, turn_id, req.prose, req.expected_revision)
     return {"status": "success", "revision": await turn_store.get_revision(story_id)}
+
+
+class CharacterCatchupRequest(BaseModel):
+    expected_revision: int
+
+
+@app.post("/api/stories/{story_id}/characters/{character_id}/catchup")
+async def character_catchup(story_id: str, character_id: str, req: CharacterCatchupRequest):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+    if engine.is_busy(story_id):
+        raise HTTPException(409, "Tarinaa käsitellään. Odota työn valmistumista.")
+    try:
+        return await engine.create_character_catchup(story_id, character_id, req.expected_revision)
+    except ValueError as error:
+        raise HTTPException(409, str(error))
 
 
 @app.post("/api/stories/{story_id}/turns/{turn_id}/player-view/retry")
