@@ -1332,7 +1332,12 @@ body[data-secrets="true"] .turn-header { display: flex; opacity: 0.65; font-size
 .turn-progress-meta { display: flex; justify-content: flex-end; color: var(--text-secondary); font: inherit; }
 #turnElapsed { font: inherit; font-variant-numeric: tabular-nums; }
 .writing-hint { color: var(--text-secondary); opacity: 0.6; font-size: 0.85rem; }
-.reading-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 16px; font-size: 0.82rem; }
+.reading-toolbar { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border-color); background: var(--bg-surface); font-size: 0.82rem; }
+.story-tail { height: 320px; overflow-y: auto; overflow-wrap: anywhere; scrollbar-gutter: stable; }
+.story-tail:has(#authoredTurnModal:not(.hidden)) { height: auto; min-height: 320px; overflow: visible; }
+.story-tail .story-writing-area { font-family: var(--font-serif); line-height: 1.95; }
+.memory-list { max-height: 240px; overflow-y: auto; overflow-wrap: anywhere; padding-right: 8px; }
+.memory-list:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .reading-toolbar select { max-width: 100%; min-width: 0; padding: 6px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; }
 .reading-toolbar label { display: flex; align-items: center; gap: 5px; }
 .chapter-heading { font-family: var(--font-serif); font-size: 1.4rem; line-height: 1.4; margin: 24px 0 12px; overflow-wrap: anywhere; }

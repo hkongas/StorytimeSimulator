@@ -45,7 +45,7 @@ The mode can be changed during a story. **Play as character** on a character car
 
 The reading toolbar separates omniscient narrator prose from the selected player character's limited view. Roleplay displays the limited view; switching to novel or simulation returns to the narrator view. The narrator can incorporate characters' supplied private thoughts. Limited prose and recaps are generated from only that character's public profile, memories, intention and witnessed events, never from shared omniscient prose. The canonical turn commits first; a failed limited-view call is recorded as `view_failed` and can be retried without undoing the turn. Witness attribution remains model-dependent; this is not multi-user access control.
 
-Chapter navigation uses stable titles. Optional recaps and titles follow the selected viewpoint. Legacy turns or turns belonging to another selected character have an explicit unavailable-view marker rather than a guessed or omniscient fallback. The prose editor edits only narrator text and does not rewrite the limited version. TXT/Markdown exports remain narrator prose.
+Viewpoint and chapter navigation stay visible above the scrolling reading area. A fixed 320-pixel tail after the prose holds the writing hint, generation progress or choices; long contents scroll within it. The authored continuation editor can expand beyond this height. Character memories have a keyboard-focusable scrolling list capped at 240 pixels. Turn and API-log timestamps use the computer's browser-local timezone, including daylight saving; database timestamps remain UTC. Chapter navigation uses stable titles. Optional recaps and titles follow the selected viewpoint. Legacy turns or turns belonging to another selected character have an explicit unavailable-view marker rather than a guessed or omniscient fallback. The prose editor edits only narrator text and does not rewrite the limited version. TXT/Markdown exports remain narrator prose.
 
 Secret truths, clocks and offscreen agents are optional (zero or more). Initialization creates them only when warranted by the premise or user request. An empty bible stays empty. The narrator may add supported new entries through `bible_additions`; users can edit them in the bible editor. New truths start hidden and cannot overwrite existing facts. Reveals and clock expiry remain narrator-only until explicit per-character observations establish perception. Quiet stories need no mysteries, hazards or deadlines.
 
@@ -128,6 +128,12 @@ Legacy chronicle, perceptual-filter, and watchdog functions remain in the source
 
 ```powershell
 python -m unittest discover -s tests -v
+```
+
+Frontend timestamp and structure regressions can run separately with Node.js (only for testing, not application use):
+
+```powershell
+node --test tests\test_frontend.cjs
 ```
 
 Tests use temporary directories and fake models, not the user's stories or real model calls. They cover, among other things, information boundaries, mode differences, player actions, storage integrity, request replay, edit conflicts, memory retrieval, schema validation, background jobs, and path confinement. The test suite is limited and does not cover every usage scenario.

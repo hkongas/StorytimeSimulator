@@ -45,7 +45,7 @@ Tilaa voi vaihtaa kesken tarinan. Hahmokortin **Pelaa hahmona** siirtää roolip
 
 Lukutilan näkökulmavalinta erottaa kertojan kaikkitietävän proosan ja valitun pelaajahahmon rajatun proosan. Roolipelissä näytetään rajattu näkökulma; romaani- tai simulaatiotilaan siirtyminen avaa kertojanäkymän. Kertojan proosaan voidaan sisällyttää hahmojen palauttamia ajatuksia. Pelaajaversio muodostetaan erillisellä mallikutsulla vain hahmon omista tiedoista ja todistetuista havainnoista, ei kaikkitietävää proosaa suodattamalla. Kanoninen vuoro tallennetaan ensin; rajattu näkökulma tuotetaan tämän jälkeen erikseen. Näkökulmakutsun virhe ei peruuta vuoroa: lukutilassa näytetään `view_failed`-tila ja näkökulman voi yrittää muodostaa uudelleen vuoron toiminnosta. Tietoraja riippuu edelleen mallin havaintomerkintöjen oikeellisuudesta, eikä ole eri käyttäjien käyttöoikeusraja.
 
-Sisällysluettelo siirtyy lukuotsikoihin. Kertaukset avautuvat valitun näkökulman tietojen mukaan; pelaajan otsikotkaan eivät saa paljastaa salaisuuksia. Vanhoille vuoroille tai myöhemmin valitulle eri pelaajahahmolle ei arvata rajattua versiota, vaan puuttuva näkökulma merkitään. Pelaajaversion proosaa ei voi muokata kertojan tekstieditorilla. Tekstikorjaus ei automaattisesti kirjoita rajattua versiota uudelleen. TXT/Markdown-vienti on edelleen kertojan proosa.
+Näkökulmavalinta ja sisällysluettelo pysyvät näkyvissä lukunäkymän yläreunassa myös tekstiä vieritettäessä. Sisällysluettelo siirtyy lukuotsikoihin. Proosan jäljessä on vakionkorkuinen 320 pikselin alue jatkamisen tyhjätilalle, työvaiheille ja valinnoille; pitkät sisällöt vierivät sen sisällä. Oman jatkon editori avautuu tarvittaessa tätä korkeammaksi. Hahmokortin muistijäljet vierivät omassa, enintään 240 pikselin listassaan, johon voi kohdistaa myös näppäimistöllä. Vuorojen ja API-lokin aikaleimat näytetään tietokoneen eli selaimen paikallisella aikavyöhykkeellä, kesäaika huomioiden; tietokannan aikaleimat säilyvät UTC-ajassa. Kertaukset avautuvat valitun näkökulman tietojen mukaan; pelaajan otsikotkaan eivät saa paljastaa salaisuuksia. Vanhoille vuoroille tai myöhemmin valitulle eri pelaajahahmolle ei arvata rajattua versiota, vaan puuttuva näkökulma merkitään. Pelaajaversion proosaa ei voi muokata kertojan tekstieditorilla. Tekstikorjaus ei automaattisesti kirjoita rajattua versiota uudelleen. TXT/Markdown-vienti on edelleen kertojan proosa.
 
 Salaiset totuudet, kellot ja sivussa toimivat agentit ovat valinnaisia (0–n). Tarinan alustus voi luoda niitä asetelman tai käyttäjän toiveen perusteella; tyhjää tarinaraamattua ei täytetä automaattisesti. Kertoja voi lisätä perusteltuja uusia rakenteita vuoron `bible_additions`-kentässä, ja käyttäjä voi muokata niitä tarinaraamatun editorissa. Uusi salaisuus alkaa piilossa eikä korvaa olemassa olevaa totuutta. Paljastukset etenevät `hidden` → `hinted` → `revealed`; hahmo saa vain oman havaintonsa, ei salaisen faktan koko tekstiä. Löytöreitin muutos viittaa sitä aiheuttaneeseen tapahtumaan. Olemassa olevat kellot etenevät kerran vuorossa, ja niiden päättymisen seuraus laukeaa kerran. Rauhallisen tarinan ei tarvitse sisältää salaisuuksia, uhkia tai aikapainetta.
 
@@ -145,6 +145,12 @@ Vanhoja kronikoitsija-, aistisuodatin- ja valvojatoimintoja on edelleen lähdeko
 
 ```powershell
 python -m unittest discover -s tests -v
+```
+
+Käyttöliittymän aikaleima- ja rakenne-regressiot voi ajaa erikseen Node.js:llä (vain testaukseen, ei sovelluksen käyttöön):
+
+```powershell
+node --test tests\test_frontend.cjs
 ```
 
 Testit käyttävät väliaikaisia kansioita ja valemalleja, eivät käyttäjän tarinoita tai oikeita mallikutsuja. Ne kattavat muun muassa tietorajauksen, tilojen erot, pelaajan toiminnan, tallennuksen eheyden, uudelleenlähetyksen, muokkausristiriidat, muistinhaun, skeeman validoinnin, taustatyöt ja polkurajaukset. Testit ovat rajallisia eivätkä kata kaikkia käyttötilanteita.

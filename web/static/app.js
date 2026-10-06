@@ -13,6 +13,20 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, character => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[character]));
 }
 
+function formatLocalTimestamp(value, includeSeconds = false) {
+  if (!value) return "-";
+  let timestamp = String(value).trim();
+  // SQLite CURRENT_TIMESTAMP is UTC, but its text has no timezone suffix.
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(timestamp)) {
+    timestamp = timestamp.replace(" ", "T") + "Z";
+  }
+  const date = new Date(timestamp);
+  if (isNaN(date.getTime())) return String(value);
+  const options = { hour: "2-digit", minute: "2-digit" };
+  if (includeSeconds) options.second = "2-digit";
+  return date.toLocaleTimeString([], options);
+}
+
 // --- Alustus kun sivu latautuu ---
 document.addEventListener("DOMContentLoaded", () => {
   if (typeof applyTranslations === "function") applyTranslations();
@@ -258,7 +272,7 @@ function renderStoryView(data, preserveReadingPosition = false) {
   const stream = document.getElementById("proseStream");
   stream.classList.remove("hidden");
   const authoredPanel = document.getElementById('authoredTurnModal');
-  if (stream.contains(authoredPanel)) document.body.appendChild(authoredPanel);
+  if (stream.contains(authoredPanel) || document.getElementById('storyTail').contains(authoredPanel)) document.body.appendChild(authoredPanel);
   stream.innerHTML = "";
   renderChoices([]);
   const viewSelect = document.getElementById('readingView');
@@ -355,7 +369,9 @@ function renderStoryView(data, preserveReadingPosition = false) {
       openAuthoredTurn();
     }
   };
-  stream.appendChild(writingArea);
+  const tail = document.getElementById('storyTail');
+  tail.querySelector('.story-writing-area')?.remove();
+  tail.prepend(writingArea);
   scrollArea.scrollTop = preserveReadingPosition ? readingPosition : scrollArea.scrollHeight;
 }
 
@@ -387,10 +403,7 @@ function appendTurnToView(turn, animate = true) {
   const timeTag = document.createElement("span");
   timeTag.className = "turn-timestamp";
   if (turn.created_at) {
-    const d = new Date(turn.created_at);
-    timeTag.textContent = !isNaN(d.getTime())
-      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : turn.created_at;
+    timeTag.textContent = formatLocalTimestamp(turn.created_at);
   } else {
     timeTag.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
@@ -464,6 +477,7 @@ async function deleteStory(storyId, event) {
       document.getElementById("storyToneBadge").classList.add("hidden");
       document.getElementById("storyGenreText").textContent = "-";
       document.getElementById("proseStream").innerHTML = "";
+      document.querySelector('.story-writing-area')?.remove();
       document.getElementById("proseStream").classList.add("hidden");
       document.getElementById("choicesContainer").classList.add("hidden");
       document.getElementById("emptyStoryNotice").classList.remove("hidden");
@@ -734,7 +748,7 @@ function renderCharacterAccordion(characters) {
 
         <div class="memory-stream-container private-detail mt-4">
           <h4 style="font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px;">Muistijäljet</h4>
-          <ul class="memory-list" id="memlist-${escapeHtml(char.id)}" style="list-style: none; font-size: 0.82rem; color: var(--text-secondary); display: flex; flex-direction: column; gap: 4px;">
+          <ul class="memory-list" id="memlist-${escapeHtml(char.id)}" tabindex="0" aria-label="Muistijäljet: ${escapeHtml(char.name)}" style="list-style: none; font-size: 0.82rem; color: var(--text-secondary); display: flex; flex-direction: column; gap: 4px;">
             <li>Ladataan muistoja...</li>
           </ul>
         </div>
@@ -1039,6 +1053,7 @@ async function startNewStory() {
     stream.classList.add("hidden");
   }
   document.getElementById("choicesContainer")?.classList.add("hidden");
+  document.querySelector('.story-writing-area')?.remove();
 
   const overlay = document.getElementById("storyCreationOverlay");
   overlay?.classList.remove("hidden");
@@ -1861,7 +1876,7 @@ async function loadDebugLogs() {
     tbody.innerHTML = "";
     logs.forEach(log => {
       const tr = document.createElement("tr");
-      const timeStr = log.created_at ? (log.created_at.split(" ")[1] || log.created_at) : "-";
+      const timeStr = formatLocalTimestamp(log.created_at, true);
       let statusBadge = `<span class="debug-badge-ok">OK</span>`;
       if (log.status === "error") {
         statusBadge = `<span class="debug-badge-err" title="${escapeHtml(log.error_message)}">VIRHE</span>`;
