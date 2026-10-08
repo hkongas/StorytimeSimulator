@@ -457,7 +457,7 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
             for (clock_id,) in clock_rows:
                 await connection.execute(
                     "UPDATE clocks SET remaining_beats = MAX(0, remaining_beats - ? - ?) WHERE id = ?",
-                    (0 if audit.get("skip_clock_tick") else (plan["elapsed_time"]["clock_beats"] if plan.get("elapsed_time") else outcome.elapsed_time.clock_beats), ticks.get(clock_id, 0), clock_id)
+                    (0 if audit.get("skip_clock_tick") else (outcome.elapsed_time.clock_beats if audit.get("interaction_budget") or audit.get("resolver_audit", {}).get("intermediate_outcomes") else plan["elapsed_time"]["clock_beats"] if plan.get("elapsed_time") else outcome.elapsed_time.clock_beats), ticks.get(clock_id, 0), clock_id)
                 )
             for agent_id, move in plan.get("offscreen_moves", {}).items():
                 await connection.execute(
@@ -525,6 +525,9 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
             state["repetition_assessment"] = outcome.repetition_assessment
             state["failure_policy"] = outcome.failure_policy
             state["scene_stop"] = outcome.scene_stop
+            if audit.get("interaction_budget"):
+                state["interaction_boundary"] = {"budget": audit["interaction_budget"],
+                    "pending_reactions": [item.model_dump() for item in outcome.pending_reaction_decisions]}
             state["no_progress_beats"] = (0 if audit.get("objective_progress") else int(previous_state.get("no_progress_beats", 0)) + 1)
             await connection.execute(
                 "INSERT INTO story_runtime VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json",

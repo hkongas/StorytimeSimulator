@@ -792,6 +792,34 @@
           </div>
         </div>
 
+        <hr class="modal-divider">
+        <div class="tuning-section">
+          <h3 class="tuning-title">Tilanneohjain (Situation)</h3>
+          <div class="grid-2-col">
+            <div class="form-group">
+              <label for="settingSituationModel" data-i18n="modelLabel">Malli</label>
+              <input type="text" id="settingSituationModel" class="styled-input" placeholder="CHARACTER_MODEL" oninput="updateTemperatureControls()">
+            </div>
+            <div class="form-group">
+              <label id="situationTokenLabel" for="settingSituationMaxTokens">Vastausbudjetti</label>
+              <input type="number" id="settingSituationMaxTokens" class="styled-input" min="200" max="128000" step="1" placeholder="4096">
+            </div>
+            <div class="form-group">
+              <label for="settingSituationTemp" data-i18n="temperatureLabel">Luovuus / Lämpötila</label>
+              <input type="number" id="settingSituationTemp" class="styled-input" min="0" max="1.5" step="0.05" placeholder="0.4">
+              <small id="settingSituationTempNote" class="setting-note hidden">Azure GPT-5/6: lämpötila 1.</small>
+            </div>
+            <div class="form-group">
+              <label for="settingSituationReasoning" data-i18n="reasoningEffortLabel">Ajattelun taso (Reasoning)</label>
+              <select id="settingSituationReasoning" class="styled-select">
+                <option value="low" selected data-i18n="reasoningLow">Matala (Low)</option>
+                <option value="medium" data-i18n="reasoningMedium">Keskitaso (Medium)</option>
+                <option value="high" data-i18n="reasoningHigh">Korkea / Syvä (High)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeSettingsModal()" data-i18n="closeBtn">Sulje</button>

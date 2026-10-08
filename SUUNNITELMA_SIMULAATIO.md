@@ -1,6 +1,6 @@
 # Tarinamoottori: vapaa maailma ja rajattu toimijuus
 
-Suunnitelma 7.10.2026. Koostettu keskustelun suunnitteluratkaisuista ja toteutettu tavanomaisilla mallikutsuilla. Kenttäkohtaiset muutokset, päätösryhmät, vastauskorjaus, juoniohjaus, migraatioesikatselu ja jatkovalinnat on lisätty. Valemallitestit varmentavat tekniset rajat; kirjallinen laatu ja pitkäkestoinen muistaminen tarvitsevat oikeiden mallien kokeet. Realtime jää erilliseksi tutkimus- ja jatkosuunnitelmaksi; sitä ei oteta tämän muutoksen yhteydessä käyttöön.
+Suunnitelma päivitetty 8.10.2026. Toteutettu tavanomaisilla mallikutsuilla: kenttäkohtaiset muutokset, päätösryhmät, vastauskorjaus, juoniohjaus, migraatioesikatselu ja jatkovalinnat sekä suunnittelijan pyytämä adaptiivinen vuorovaikutus. Adaptiivisen lisäyksen lopullinen kohdennettu yhdistelmäajo läpäisi 26/26 testiä; provider-reitityksen perustestit läpäisivät 10/10 ja uusi situation-kohtainen testi erikseen 1/1. Valemallitestit varmentavat teknisiä rajoja; kirjallinen laatu, pitkäkestoinen muistaminen ja kustannussäästö tarvitsevat oikeiden mallien kokeet. Realtime jää erilliseksi tutkimus- ja jatkosuunnitelmaksi; sitä ei oteta käyttöön.
 
 ## 1. Tavoite ja vastuunjako
 
@@ -69,7 +69,11 @@ Alkuperäinen hyväksytty kertojaproosa on pysyvä kirjallinen historiatallenne.
 
 ## 6. Päätösryhmät ja vuorovaikutus
 
-Suunnittelija valitsee tilanteen perusteella peräkkäiset, rinnakkaiset tai yhdistetyt päätösryhmät. Ohjelma tarkistaa toimijat, riippuvuudet, tietorajat ja vaihebudjetin.
+Staattisessa yhteensopivuustilassa suunnittelija valitsee peräkkäiset, rinnakkaiset tai yhdistetyt päätösryhmät. Puuttuva `PlannerResponse.interaction_mode` tarkoittaa `static`, joten vanhat skeemat ja valemallit eivät vaihda tilaa automaattisesti. Suunnittelijan pyytämä `adaptive` antaa vain yhden aloitusryhmän (tai ei ryhmää); tilanneohjaaja valitsee seuraavat ryhmät tapahtumahavainnoista ja avoimista yrityksistä. Sama hahmo voi vastata uuteen havaintoon A → B → A -ketjussa, ja C voi tulla mukaan ilman ennalta suunniteltua vuoroa. Reaktio edellyttää täsmällistä hahmon havaitsemaa `event_id`-viitettä; sama hahmo–tapahtuma-pari käytetään vain kerran.
+
+Pieni `SituationResponse` ratkaisee seuraukset ilman proosaa. Rajattu `RelayPermit` voi välittää kokonaisia pelkän puheen repliikkejä ilman uutta ohjaajakutsua näkyville, toimintakykyisille samassa paikassa oleville osallistujille, joiden lähdekuulohavainnot on tarkistettu. Lupa määrää kuulijat, kanavan, äänenvoimakkuuden ja repliikkikaton. **Fast path luottaa ohjaajan oikeaan semanttiseen puhe-/yksityisyys-/keskeytysarvioon; hahmon `resolution_hint` tai kenttävalidointi ei todista pelkkää puhetta.** Epäselvä tai ehtonsa menettänyt lupa palauttaa ohjaajalle.
+
+Adaptiivinen tapahtumaketju, välivaiheiden jatkuvuus, sitoumukset, yritystulokset ja aika yhdistetään järjestyksessä. Erillinen `InteractionProse` ei salli tapahtuma- tai tilakenttiä, joten proosakirjoittaja ei kirjoita niitä uudelleen. Proosa ja hyväksytty ehdokastila tallentuvat atomisesti; kirjallinen vastaavuus jää malliriippuvaiseksi. Proosan rajattu uusinta saa alkuperäiset tapahtumat ja validointivirheen eikä uusi hahmopäätöksiä. Uusia maailmanasioita ja hahmoja voidaan luoda ohjaajavaiheessa, ei proosavaiheessa; hahmoluonnin omat testit puuttuvat vielä. Null/läsnäolo-, piilossaolo-, yksityistieto- ja pelaajarajat säilyvät. Toteutuksen lähteet ja tarkemmat rajoitukset: [vuorovaikutussuunnitelma](SUUNNITELMA_VUOROVAIKUTUS.md), [adaptiivinen ajuri](engine/adaptive_interaction.py), [tilanneohjaaja](engine/situation_agent.py), [historia](engine/interaction_history.py), [tokenvaraukset](engine/interaction_llm.py) ja [skeemat](core/schemas.py).
 
 ### Peräkkäinen, tiivistetty vuorovaikutus
 
@@ -91,11 +95,13 @@ Hahmon vastaus sisältää yksityisen ajattelun ja julkisen toiminnan tai puheen
 
 ### Budjetti, pelaaja ja tallennus
 
-- Ehdotus: rajattu päätösryhmien ja väliratkaisujen määrä yhtä käyttäjän jatkopyyntöä kohti. Tarkka oletus valitaan vertailukokeissa.
+- Adaptiivisen ehdokasvaiheen rajat koskevat hahmopäätöksiä, ohjaajakutsuja, hahmokohtaisia päätöksiä, aikaa ja tokenvarauksia. Suunnittelu, loppuproosa ja pelaajanäkymä ovat niiden ulkopuolella; kyse ei ole koko pyynnön rajasta.
+- Alustava tokenbudjetti on 48000 varattua tokenia. Syöte ja skeema arvioidaan UTF-8-tavumäärä/3-estimaatilla ja tuotoksen yläraja varataan lisäksi; estimaatti ei ole todellisten tokenien ehdoton yläraja eikä laskutettu käyttö. Käyttämätöntä tuotosvarausta ei palauteta.
+- `frame_exhausted` pysäyttää ketjun eikä käynnistä automaattista uudelleensuunnittelua. Keskeytyksen recovery säilyttää ehdokkaan, rajakohdan odottavat herätteet ja seuraavan ryhmän sekä estää saman pyynnön aikeiden replayn; autonomista jatkamista palvelimen uudelleenkäynnistyksen jälkeen ei ole.
 - Pysähdy pelaajan uuteen merkitykselliseen päätökseen. Älä tee pelaajan reaktiota hänen puolestaan.
 - Välivaiheet ovat ehdokastilaa. Hyväksy kokonaisuus atomisesti tai tallenna erillinen ehjä vuoro selkeässä päätöskohdassa.
-- Nykyinen yhden lisäreaktion asetus korvataan tai sovitetaan ryhmämalliin; se ei saa synnyttää toista päällekkäistä orkestrointisilmukkaa.
-- SSE näyttää työvaiheet, mutta ehdokastekstiä ei esitetä tallennettuna historiana.
+- Adaptiivinen tila ja eksplisiittiset staattiset päätösryhmät estävät vanhan yhden lisäreaktion silmukan. `extra_reaction_cycle` jää staattiselle ryhmättömälle yhteensopivuuspolulle; adaptiivinen reaktioketju ei tarvitse sen valintaa.
+- SSE välittää julkiset ohjaaja- ja hahmovaiheet jo keruun aikana, mutta ehdokastekstiä ei esitetä tallennettuna historiana. Automaattinen loppuproosa ei palauta tapahtuma- tai tilakenttiä. Sen kehote säilyttää sävyohjauksen, ei koko ratkaisijan ohjeistoa.
 
 ## 7. Juoniohjauksen voimakkuus
 
@@ -183,6 +189,23 @@ Vertaa samoilla lähtötilanteilla nykyistä rinnakkaista mallia, tiivistettyä 
 Mittaa autonomia, tietorajat, toisto, tavoitteiden seuraukset, historiakonsistenssi, korjausaste, kutsumäärä, viive ja tokenit. Automaattitestit todistavat teknisiä rajoja; oikeiden mallien usean kohtauksen kokeet arvioivat kirjallista ja semanttista laatua.
 
 ## 13. Toteutuksen varmennus
+
+Pääagentin raportoima lopullinen kohdennettu varmennus:
+
+| Ajo / valitsin | Tulos | Runner / seinäkello |
+| --- | --- | --- |
+| `tests.test_adaptive_interaction` (valmis moduuli) | 18/18 läpäisi | 5.331 s / 5.764 s |
+| Adaptiivinen vuorovaikutus, simulaatio ja tilasopimus (ennen moduulin kolmea uusinta testiä; valitsimet alla) | 26/26 läpäisi | 8.682 s / 9.101 s |
+| Provider-/Azure-/API-reitityksen perustestit (valitsimet alla) | 10/10 läpäisi | 0.714 s / 2.909 s |
+| `node --test tests\test_simulation_frontend.cjs tests\test_frontend.cjs` | 10/10 läpäisi | 0.440 s / 0.525 s |
+
+Yhdistelmäajon valitsimet: `tests.test_adaptive_interaction`, `tests.test_simulation_plan.SimulationUnitTests`, `tests.test_simulation_plan.SimulationStorageTests.test_integrated_intermediate_resolution_is_atomic`, `tests.test_simulation_plan.SimulationStorageTests.test_same_response_creation_elapsed_attempt_and_commitment`, `tests.test_turn_contract.TurnContractTests.test_history_compression_is_separate_from_resolver` ja `tests.test_turn_contract.TurnContractTests.test_expired_clock_fires_once_without_omniscient_observers`.
+
+Reitityksen perustestit: `tests.test_engine.ProviderTests`, `tests.test_engine.AzureTransportTests`, `tests.test_api.ApiTests.test_profile_secrets_are_not_returned` ja `tests.test_api.ApiTests.test_gemini_profile_key_stays_server_side`. Situation-roolin oma malli ja oletukset sisältyvät valmiin adaptiivisen moduulin testinäyttöön.
+
+Aiemmat regressiot korjattiin; yllä olevat ajot läpäisivät, mutta koko projektin regressioajoa ei väitetä eikä päällekkäisiä testejä lasketa yhteen. Tallennustestien budjetti on eristetty 48000:een käyttäjän `.env`-asetuksista. Moduuli kattaa keruunaikaiset julkiset SSE-vaiheet, tapahtumaketjun säilymisen proosan uusinnassa, keskeytyksen siivouksen ja pelaajan aie → NPC → uusi pelaajavalinta -rajan ilman generoituja pelaajavastauksia sekä odottavan reaktion tallennuksen. Adaptiivinen peräkkäinen ryhmä sisältää vain yhden toimijan; useat toimijat sallitaan vain rinnakkaisessa lukitun lähtöhetken ryhmässä. Loppuproosa ei palauta tapahtuma-/tilakenttiä ja säilyttää vain sävyohjauksen, ei koko ratkaisijan ohjeistoa. Uusien hahmojen omat testit ja oikeiden mallien laatu-/säästövertailut puuttuvat edelleen. Dokumentointimuutoksessa testejä ei ajeta.
+
+### Aiemman staattisen uudistuksen testinäyttö (ei adaptiivisen lisäyksen lopputulos)
 
 Varmennuksessa 50 simulaatio-, tilasopimus- ja reaktiotestiä ajettiin kokonaisuutena: 49 läpäisi ensimmäisellä ajolla. Yksi vanha testi oletti, ettei virheellistä vastausta korjata; sen valemalli muutettiin palauttamaan virheellinen tapahtumaviite myös korjauskutsussa. Kyseisen testin uusinta läpäisi ja varmisti, ettei virheellistä korjausta tallenneta. Kaikki 16 käyttöliittymätestiä sekä Pythonin syntaksi- ja whitespace-tarkistukset läpäisivät. API-integraation migraatio, jatkaminen, haaran eristys ja juoniohjauksen tallennus on tarkistettu oikealla backendillä ja valemallilla. Katselmoinnin kaksi löydöstä korjattiin ja niiden kohdennetut testit läpäisivät: poistuneen hahmon uusi päätös ja haaralähteen säilyminen.
 

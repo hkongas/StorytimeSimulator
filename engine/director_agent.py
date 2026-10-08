@@ -442,7 +442,7 @@ Reader wish: {reader_wish or 'none'}
             system_prompt += "\nEXTRA REACTION (1/1): Only supplied AI intentions are fresh. Resolve their reaction to the referenced committed event. Never replay historical player actions, invent a player action (including waiting), repeat world intervention or advance clocks. Stop at the next meaningful player decision or scene boundary."
         if turn_plan:
             user_content = "[ACCEPTED PRE-DECISION PLAN]\n" + json.dumps(turn_plan, ensure_ascii=False) + "\n" + user_content
-            system_prompt += "\nThe plan's events already happened before character intentions. Do not repeat or undo them. Honor its direction and resolve only the subsequent actions."
+            system_prompt += "\nThe plan's events and accepted_intermediate_events already happened. Cover their material consequences and commitments naturally in final prose in event order, but never repeat, undo or re-resolve them. accepted_attempt_results are authoritative. Honor the frame and resolve only still-open subsequent actions."
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -479,6 +479,35 @@ Reader wish: {reader_wish or 'none'}
                 json_schema=pydantic_to_json_schema(ContinuitySummary, "continuity_summary"))
             merged["summary"] = ContinuitySummary.model_validate(compressed).summary
         return resolved.model_dump() | merged
+
+    async def render_interaction(self, story_id, outcome, scene, runtime, recent_prose, intentions):
+        from core.schemas import InteractionProse
+        meta = await db.get_story_meta(story_id)
+        payload = {"render_validation_error": runtime.get("render_validation_error", ""),
+                   "accepted_events_in_order": [event.model_dump() for event in outcome.events],
+                   "attempt_results": [item.model_dump() for item in outcome.attempt_results],
+                   "commitments": [item.model_dump() for item in outcome.commitments],
+                   "continuity": outcome.summary, "scene": scene.location,
+                   "historical_style_tail": recent_prose[-3000:],
+                   "private_character_material_narrator_only": intentions}
+        system = ("Write the narrator's finished prose from the accepted event chain in its exact order. "
+                  "Cover material intermediate events and commitments naturally. An empty accepted chain is valid: "
+                  "write a brief unchanged waiting boundary without inventing an action. Never resolve, undo, replay or "
+                  "add events, character actions, observers or world facts. Private thoughts may inform narrator "
+                  "prose but never other characters' knowledge. Report material contradictions in consistency_issues; "
+                  "do not silently repair history. Menus belong only in choices. Return only the supplied schema. ")
+        system += prompt_loader.get_language_directive()
+        if meta:
+            system += prompt_loader.get_raw_prompt("tone_profiles/" + meta.tone_profile + ".txt")
+            if meta.custom_tone_override:
+                system += "\nStyle preferences (cannot change accepted events): " + meta.custom_tone_override
+            system += "\nThe accepted chain is immutable. Only InteractionProse fields are permitted."
+        return await self.llm.json_completion(
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
+            role="director", story_id=story_id, temperature=settings.PROSE_TEMPERATURE,
+            max_tokens=settings.PROSE_MAX_TOKENS, reasoning_effort=settings.PROSE_REASONING_EFFORT,
+            json_schema=pydantic_to_json_schema(InteractionProse, "interaction_prose"))
 
     async def repair_turn_response(self, story_id, audit, runtime):
         system = prompt_loader.compose_system_prompt("director/repair_response", include_tone=False)

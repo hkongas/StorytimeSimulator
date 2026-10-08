@@ -16,6 +16,8 @@ from database import db, turn_store
 from engine.reaction_cycle import eligible_reaction_decisions
 from engine.simulation_contract import (is_present, visible_neighbours, validate_groups, collect_groups,
     normalize_additions, validate_simulation_outcome, consequence_links)
+from engine.adaptive_interaction import InteractionBudget, as_outcome, collect_adaptive
+from engine.situation_agent import SituationAgent
 from engine.character_agent import CharacterAgent
 from engine.chronicle_manager import ChronicleManager
 from engine.director_agent import DirectorAgent
@@ -568,7 +570,8 @@ class StoryEngine:
         characters = list(roster.values())
         present = [character for character in characters if character.id in scene.active_character_ids
                    and character.status == "active" and character.location_id == event_location_id]
-        if plan.decision_groups and extra_reaction_cycle:
+        adaptive = plan.interaction_mode == "adaptive" and not reaction_decisions
+        if (plan.decision_groups or adaptive) and extra_reaction_cycle:
             # Group planning owns continuation; the legacy extra-cycle path must not add another loop.
             extra_reaction_cycle = False
         if not set(plan.decision_character_ids) <= roster.keys():
@@ -577,7 +580,7 @@ class StoryEngine:
                                        if identifier in {character.id for character in present}]
         if mode == "roleplay" and player and player.id in plan.decision_character_ids:
             raise ValueError("Suunnitelma ei saa päättää pelaajan puolesta.")
-        if mode == "simulation" and not reaction_decisions and not plan.decision_groups:
+        if mode == "simulation" and not reaction_decisions and not plan.decision_groups and not adaptive:
             plan.decision_character_ids = [character.id for character in present]
         intentions = []
         if mode == "roleplay" and player and player in present and not reaction_decisions:
@@ -587,9 +590,16 @@ class StoryEngine:
         semaphore = asyncio.Semaphore(self.max_concurrent_characters)
         progress_queue = asyncio.Queue()
 
+        for intention in intentions:
+            intention.setdefault("id", uuid4().hex)
+        candidate_private_intentions = list(intentions)
+
         async def decide(character: Character, observed_starts=None, intermediate=None):
             async with semaphore:
                 observation = await turn_store.get_observation(story_id, character.id)
+                observed_scene_location = scene.location
+                observed_neighbours = visible_neighbours(character, [other for other in roster.values()
+                    if other.id in scene.active_character_ids and other.status == "active" and is_present(other, scene)])
                 new_observations = [event.observation_for(character.id) for event in plan.events
                                     if character.id in event.witnesses]
                 if new_observations:
@@ -601,23 +611,29 @@ class StoryEngine:
                     for event in resolved.events:
                         if character.id in event.witnesses:
                             observation += "\n[INTERMEDIATE VERIFIED EVENT] " + event.observation_for(character.id)
+                if adaptive:
+                    own_prior = [item for item in candidate_private_intentions if item["character_id"] == character.id]
+                    if own_prior:
+                        observation += "\n[YOUR PREVIOUS PRIVATE CANDIDATE ATTEMPT]\n" + json.dumps(own_prior[-1], ensure_ascii=False)
+                    own_commitments = [item for item in runtime.get("commitments", {}).values() if character.id in item.get("participants", [])]
+                    if own_commitments:
+                        observation += "\n[YOUR CANDIDATE COMMITMENTS]\n" + json.dumps(own_commitments, ensure_ascii=False)
                 if reaction_decisions:
                     observation += "\n\nA new verified observation now requires a fresh meaningful choice. Decide your response using only your own observations and knowledge; previous attempts are historical, not new actions."
                 agent_character = character.model_copy(update={"is_player_controlled": False}) if mode != "roleplay" else character
-                decision = await CharacterAgent(agent_character, self.llm).decide_intention(
-                    story_id=story_id, scene_location=scene.location,
+                decision = await CharacterAgent(agent_character, interaction_llm if adaptive else self.llm).decide_intention(
+                    story_id=story_id, scene_location=observed_scene_location,
                     recent_prose_context=observation, tone_profile=meta.tone_profile,
                     custom_tone_override=meta.custom_tone_override,
-                    nearby_characters=visible_neighbours(character, [other for other in roster.values()
-                        if other.id in scene.active_character_ids and other.status == "active" and is_present(other, scene)])
+                    nearby_characters=observed_neighbours
                 )
                 decision["context_manifest"]["candidate_event_ids"] = [event.id for event in plan.events if event.observation_for(character.id)]
                 decision["context_manifest"]["observed_start_intent_ids"] = [start["intent_id"] for start in observed_starts or [] if character.id in start["observer_ids"]]
                 decision["context_manifest"]["intermediate_event_ids"] = [event.id for resolved in intermediate or [] for event in resolved.events if event.observation_for(character.id)]
-                group_index = next((index for index, group in enumerate(groups) if character.id in group.character_ids), 0)
+                group_index = max(0, adaptive_budget.decisions - 1) if adaptive else next((index for index, group in enumerate(groups) if character.id in group.character_ids), 0)
                 progress = {"character_id": character.id, "character_name": character.name,
-                            "group_index": group_index, "group_count": len(groups),
-                            "group_mode": groups[group_index].mode if groups else "parallel"}
+                            "group_index": group_index, "group_count": adaptive_budget.decision_limit if adaptive else len(groups),
+                            "group_mode": "adaptive" if adaptive else groups[group_index].mode if groups else "parallel"}
                 if mode != "roleplay":
                     progress["character_thought"] = decision["private_thought"]
                 progress_queue.put_nowait(progress)
@@ -626,6 +642,21 @@ class StoryEngine:
         groups = validate_groups(plan, {character.id for character in present},
                                  player.id if mode == "roleplay" and player else None, decision_budget)
         intermediate_outcomes = []
+        initial_runtime = json.loads(json.dumps(runtime))
+        candidate_world_state = initial_world
+        adaptive_budget = InteractionBudget(
+            decision_limit=min(settings.SITUATION_DECISION_LIMIT, decision_budget * 4),
+            call_limit=settings.SITUATION_CALL_LIMIT, character_limit=settings.SITUATION_CHARACTER_LIMIT,
+            seconds=settings.SITUATION_TIME_LIMIT_SECONDS, token_limit=settings.SITUATION_TOKEN_LIMIT)
+
+        from engine.interaction_llm import InteractionLLM
+        interaction_llm = InteractionLLM(self.llm, adaptive_budget)
+
+        def advance_runtime(resolved):
+            runtime.update(merge_continuity(resolved, runtime))
+            runtime.setdefault("attempt_results", {}).update({item.intent_id: item.model_dump() for item in resolved.attempt_results})
+            runtime.setdefault("commitments", {}).update({item.id: item.model_dump() for item in resolved.commitments})
+
         async def resolve_intermediate(group_intentions, starts, _previous):
             candidate = await self.director.synthesize_turn_prose(
                 story_id, scene, group_intentions, "", runtime=runtime, characters=list(roster.values()),
@@ -654,13 +685,134 @@ class StoryEngine:
                 for field in ("physical_state", "mental_state", "status"):
                     if getattr(update, field) is not None:
                         setattr(character, field, getattr(update, field))
+            advance_runtime(resolved)
             return resolved
+
+        async def accept_situation(response, fresh, previous):
+            nonlocal candidate_world_state
+            resolved = as_outcome(response)
+            validate_simulation_outcome(resolved, fresh, runtime, roster)
+            supplied = {item["id"]: item for item in fresh}
+            for event in resolved.events:
+                if any(previous_event.id == event.id for item in previous for previous_event in item.events):
+                    raise ValueError("Situation controller may not replay an accepted event")
+                if event.derived_from.startswith("intent:") or event.derived_from == "routine":
+                    source = supplied.get(event.intent_id)
+                    if event.intent_id in {value.intent_id for item in previous for value in item.attempt_results if value.status != "pending"}:
+                        raise ValueError("Situation controller cannot replay an already resolved attempt")
+                    if not source or event.actor_id != source["character_id"] or (event.derived_from != "routine" and event.derived_from != "intent:" + source["character_id"]):
+                        raise ValueError("Situation event must preserve its exact supplied intention")
+                elif event.actor_id in roster:
+                    raise ValueError("Situation controller cannot invent a character action")
+            assign_event_ids(resolved.events, consequence_links(resolved))
+            # Reaction and permit references must follow the normalized persistent event IDs.
+            original_ids = [event.id for event in response.events]
+            remap = dict(zip(original_ids, [event.id for event in resolved.events]))
+            if response.next_group:
+                for reaction in response.next_group.reactions:
+                    reaction.event_id = remap.get(reaction.event_id, reaction.event_id)
+            if response.relay_permit:
+                response.relay_permit.source_event_id = remap.get(response.relay_permit.source_event_id, response.relay_permit.source_event_id)
+            for candidate in resolved.spawned_characters:
+                if candidate.id in roster or not candidate.id or len(candidate.id) > 80 or not all(char.isalnum() or char in "_-" for char in candidate.id):
+                    raise ValueError("New character collides with existing actor or has an invalid ID")
+                roster[candidate.id] = Character(**candidate.model_dump(), status="active")
+            candidate_world_state, _ = await normalize_additions(story_id, resolved, roster, candidate_world_state)
+            candidate_world_state = {key: list(value.values()) for key, value in candidate_world_state.items()}
+            existing_bible = {field: bible[field] + [item.model_dump() for item in getattr(plan.bible_additions, field)]
+                              + [addition.model_dump() for item in previous for addition in getattr(item.bible_additions, field)]
+                              for field in ("secret_truths", "clocks", "offscreen_agents")}
+            validate_bible_additions(resolved.bible_additions, existing_bible, roster)
+            known_truths = {item["id"] for item in existing_bible["secret_truths"]} | {item.id for item in resolved.bible_additions.secret_truths}
+            if any(item.truth_id not in known_truths for item in resolved.truth_access_updates):
+                raise ValueError("Unknown truth access update")
+            locations = {identifier: character.location_id for identifier, character in roster.items()}
+            for event in resolved.events:
+                locations.update({change.entity_id: change.value for change in resolved.state_changes
+                                  if change.event_id == event.id and change.entity == "character" and change.field == "location_id"})
+                for observation in event.observations:
+                    observer = roster.get(observation.character_id)
+                    actor = roster.get(event.actor_id)
+                    if (observer is None or observer.status != "active" or observer.id not in scene.active_character_ids + [item.id for item in resolved.spawned_characters] or locations[observer.id] is None
+                            or locations[observer.id] != (scene.location_id or db.location_identifier(scene.location))
+                            or (observation.modality == "saw" and actor and actor.visibility_state == "hidden" and actor.id != observer.id)):
+                        raise ValueError("Situation observation crosses presence or visibility boundary")
+            world_maps = {key: {item["id"] if key != "relationships" else item["character_a"] + "|" + item["character_b"]: item
+                                for item in value} for key, value in candidate_world_state.items()}
+            await apply_resolved_changes(story_id, resolved.state_changes, roster,
+                                         {key for key, character in roster.items() if is_present(character, scene)}, scene.location, world_maps)
+            for change in resolved.state_changes:
+                if change.entity in {"item", "relationship"}:
+                    item = world_maps["items" if change.entity == "item" else "relationships"][change.entity_id]
+                    item[change.field] = change.value
+                    if change.entity == "item" and change.field in {"holder_character_id", "location_id"}:
+                        item["location_id" if change.field == "holder_character_id" else "holder_character_id"] = None
+            for update in resolved.character_state_updates:
+                character = roster.get(update.character_id)
+                if character is None or (character.status == "dead" and update.status not in {None, "dead"}):
+                    raise ValueError("Invalid situation character update")
+                for field in ("physical_state", "mental_state", "status"):
+                    if getattr(update, field) is not None:
+                        setattr(character, field, getattr(update, field))
+            if resolved.location:
+                scene.location, scene.location_id = resolved.location.name, resolved.location.id
+            if resolved.active_character_ids is not None:
+                if not set(resolved.active_character_ids) <= roster.keys():
+                    raise ValueError("Situation scene contains unknown actor")
+                scene.active_character_ids = resolved.active_character_ids
+            elif resolved.spawned_characters:
+                scene.active_character_ids += [item.id for item in resolved.spawned_characters]
+            advance_runtime(resolved)
+            return resolved
+
+        async def resolve_situation(fresh, previous, budget):
+            progress_queue.put_nowait({"phase": "situation_resolution", "message": "Tilanneohjaaja ratkaisee havainnot ja seuraavat reaktiot..."})
+            return await SituationAgent(interaction_llm).resolve(story_id, scene, fresh, previous, runtime,
+                roster, candidate_world_state, {"direction": plan.direction, "stop_condition": plan.stop_condition,
+                                              "player_id": player.id if mode == "roleplay" and player else None,
+                                              "secret_truths": bible["secret_truths"], "clocks": bible["clocks"]}, budget)
+
+        async def checkpoint_chain(chain_intentions, chain_outcomes, budget_audit):
+            candidate_private_intentions[:] = chain_intentions
+            await turn_store.save_resolver_candidate(story_id, request_id, revision, fingerprint,
+                {"revision": revision, "intentions": chain_intentions,
+                 "intermediate_outcomes": [item.model_dump() for item in chain_outcomes],
+                 "runtime": runtime, "roster": {key: value.model_dump() for key, value in roster.items()},
+                 "scene": scene.model_dump(), "budget": budget_audit,
+                 "turn_plan": plan.model_dump()}, "collecting")
 
         if groups:
             yield {"type": "phase", "phase": "characters_thinking", "message": "Bounded decision groups...",
                    "group_index": 0, "group_count": len(groups), "group_mode": groups[0].mode}
-        decisions, public_starts, intermediate_outcomes, groups_used, group_player_stop = await collect_groups(
-            groups, decide, roster, player.id if mode == "roleplay" and player else None, resolve_intermediate, scene=scene)
+        if adaptive:
+            if len(groups) > 1:
+                raise ValueError("Adaptive planner supplies only the initial group")
+            collection_task = asyncio.create_task(collect_adaptive(
+                groups[0] if groups else None, decide, resolve_situation, accept_situation, roster, scene,
+                player.id if mode == "roleplay" and player else None, adaptive_budget,
+                initial_events=plan.events, seed_intentions=intentions, checkpoint=checkpoint_chain))
+            progress_task = None
+            try:
+                while not collection_task.done():
+                    progress_task = asyncio.create_task(progress_queue.get())
+                    done, _ = await asyncio.wait({collection_task, progress_task}, return_when=asyncio.FIRST_COMPLETED)
+                    if progress_task in done:
+                        progress = progress_task.result()
+                        yield {"type": "phase", "phase": "character_complete", "message": "Aie valmis", **progress}
+                    else:
+                        progress_task.cancel()
+                        await asyncio.gather(progress_task, return_exceptions=True)
+                decisions, public_starts, intermediate_outcomes, groups_used, group_player_stop = await collection_task
+            finally:
+                for task in (collection_task, progress_task):
+                    if task and not task.done():
+                        task.cancel()
+                await asyncio.gather(*[task for task in (collection_task, progress_task) if task], return_exceptions=True)
+            intentions = []
+            plan_warnings.append("Interaction stopped: " + adaptive_budget.stop_reason)
+        else:
+            decisions, public_starts, intermediate_outcomes, groups_used, group_player_stop = await collect_groups(
+                groups, decide, roster, player.id if mode == "roleplay" and player else None, resolve_intermediate, scene=scene)
         for decision in decisions:
             if decision.get("goal_update"):
                 roster[decision["character_id"]].current_goal = decision["goal_update"]
@@ -673,22 +825,55 @@ class StoryEngine:
         yield {"type": "phase", "phase": "prose_synthesis", "message": "Kertoja ratkaisee tapahtumat ja kirjoittaa jatkon..."}
         combined_bible = {field: bible[field] + [item.model_dump() for item in getattr(plan.bible_additions, field)]
                           for field in ("secret_truths", "clocks", "offscreen_agents")}
-        raw = await self.director.synthesize_turn_prose(
-            story_id=story_id, scene=scene, all_character_intentions=intentions,
-            recent_prose_context="\n\n".join(turn.director_prose for turn in turns[-3:])[-12000:],
-            director_guidance=director_guidance, tone_profile=meta.tone_profile,
-            custom_tone_override=meta.custom_tone_override, mode=mode,
-            reader_wish=user_input if mode != "roleplay" else None,
-            runtime=runtime, characters=list(roster.values()),
-            player_character_id=player.id if mode == "roleplay" and player else None,
-            turn_plan=plan.model_dump() | {"reaction_decisions": reaction_decisions,
-                                            "public_starts": public_starts,
-                                            "intermediate_outcomes": [item.model_dump() for item in intermediate_outcomes],
-                                            "truths": combined_bible["secret_truths"], "clocks": combined_bible["clocks"],
-                                            "offscreen_agents": combined_bible["offscreen_agents"],
-                                            "items": initial_world["items"], "relationships": initial_world["relationships"],
-                                            "locations": initial_world["locations"]}
-        )
+        if adaptive:
+            from core.schemas import InteractionProse
+            from engine.interaction_history import accepted_outcome
+            outcome = accepted_outcome(plan, intermediate_outcomes, initial_runtime, scene)
+            from core.schemas import AttemptResult
+            resolved_ids = {item.intent_id for item in outcome.attempt_results}
+            outcome.attempt_results += [AttemptResult(intent_id=item["id"], status="pending", summary="Open at interaction boundary")
+                                        for item in intentions if item["id"] not in resolved_ids]
+            draft_audit = {"revision": revision, "intentions": intentions,
+                           "intermediate_outcomes": [item.model_dump() for item in intermediate_outcomes],
+                           "accepted_candidate": outcome.model_dump(), "budget": adaptive_budget.audit()}
+            await turn_store.save_resolver_candidate(story_id, request_id, revision, fingerprint, draft_audit, "rendering")
+            for render_attempt in range(2):
+                render_runtime = runtime | {"render_validation_error": draft_audit.get("render_error", "")}
+                draft = await self.director.render_interaction(story_id, outcome, scene, render_runtime,
+                    "\n\n".join(turn.director_prose for turn in turns[-3:]), intentions)
+                draft_audit["candidate"] = draft
+                await turn_store.save_resolver_candidate(story_id, request_id, revision, fingerprint, draft_audit, "rendering")
+                try:
+                    rendered = InteractionProse.model_validate(draft)
+                    if rendered.consistency_issues:
+                        raise ValueError("Narrative contradicts accepted interaction events")
+                    break
+                except ValueError as error:
+                    draft_audit["render_error"] = str(error)
+                    if render_attempt:
+                        raise
+            outcome.prose = rendered.prose
+            outcome.choices = rendered.choices
+            outcome.chapter_title = runtime.get("chapter_title") or rendered.chapter_title
+            outcome.image_prompt = rendered.image_prompt
+            raw = outcome.model_dump()
+        else:
+            raw = await self.director.synthesize_turn_prose(
+                story_id=story_id, scene=scene, all_character_intentions=intentions,
+                recent_prose_context="\n\n".join(turn.director_prose for turn in turns[-3:])[-12000:],
+                director_guidance=director_guidance, tone_profile=meta.tone_profile,
+                custom_tone_override=meta.custom_tone_override, mode=mode,
+                reader_wish=user_input if mode != "roleplay" else None,
+                runtime=runtime, characters=list(roster.values()),
+                player_character_id=player.id if mode == "roleplay" and player else None,
+                turn_plan=plan.model_dump() | {"reaction_decisions": reaction_decisions,
+                    "public_starts": public_starts,
+                    "accepted_intermediate_events": [event.model_dump() for item in intermediate_outcomes for event in item.events],
+                    "accepted_attempt_results": [result.model_dump() for item in intermediate_outcomes for result in item.attempt_results],
+                    "truths": combined_bible["secret_truths"], "clocks": combined_bible["clocks"],
+                    "offscreen_agents": combined_bible["offscreen_agents"],
+                    "items": initial_world["items"], "relationships": initial_world["relationships"],
+                    "locations": initial_world["locations"]})
         candidate_roster = {identifier: character.model_dump() for identifier, character in roster.items()}
         async def validate_candidate(raw):
             nonlocal roster
@@ -781,21 +966,22 @@ class StoryEngine:
                         logger.warning("Removed voluntary resolver event without matching intent: %s", event.id)
                         continue
                 accepted_events.append(event)
-            final_events = list(plan.events) + [event for item in intermediate_outcomes for event in item.events]
-            for start in public_starts:
-                final_events.append(StoryEvent(
-                    id=uuid4().hex, description=start["text"], derived_from="intent:" + start["actor_id"],
-                    actor_id=start["actor_id"], intent_id=start["intent_id"], change_kind="none",
-                    observations=[{"character_id": identifier, "text": start["text"], "modality": start["modality"]}
-                                  for identifier in start["observer_ids"]]))
+            final_events = list(plan.events)
+            for phase in range(len(intermediate_outcomes) + 1):
+                for start in public_starts:
+                    if start.get("resolution_phase", len(intermediate_outcomes)) != phase:
+                        continue
+                    final_events.append(StoryEvent(
+                        id=uuid4().hex, description=start["text"], derived_from="intent:" + start["actor_id"],
+                        actor_id=start["actor_id"], intent_id=start["intent_id"], change_kind="none",
+                        observations=[{"character_id": identifier, "text": start["text"], "modality": start["modality"]}
+                                      for identifier in start["observer_ids"]]))
+                if phase < len(intermediate_outcomes):
+                    final_events.extend(intermediate_outcomes[phase].events)
             final_changes = list(outcome.state_changes)
-            for item in intermediate_outcomes:
-                outcome.elapsed_time.amount += item.elapsed_time.amount * {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86400}[item.elapsed_time.unit] / {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86400}[outcome.elapsed_time.unit]
-                outcome.elapsed_time.clock_beats += item.elapsed_time.clock_beats
-                outcome.state_changes = item.state_changes + outcome.state_changes
-                outcome.character_state_updates = item.character_state_updates + outcome.character_state_updates
-                outcome.attempt_results = item.attempt_results + outcome.attempt_results
-                outcome.commitments = item.commitments + outcome.commitments
+            final_character_updates = list(outcome.character_state_updates)
+            from engine.interaction_history import merge_intermediate_history
+            merge_intermediate_history(outcome, intermediate_outcomes, initial_runtime)
             for event in accepted_events:
                 if event not in final_events:
                     final_events.append(event)
@@ -803,7 +989,7 @@ class StoryEngine:
             validate_event_links(outcome.events, consequence_links(outcome))
             mutation_roster = {identifier: Character.model_validate(value) for identifier, value in candidate_roster.items()}
             mutation_roster.update({character.id: character for character in spawned})
-            for update in outcome.character_state_updates:
+            for update in final_character_updates:
                 if update.character_id not in roster:
                     raise ValueError("Tilapäivitys viittaa tuntemattomaan hahmoon.")
                 character = mutation_roster[update.character_id]
@@ -840,7 +1026,7 @@ class StoryEngine:
         candidate_audit = {"revision": revision, "intentions": intentions, "candidate": raw,
                            "public_starts": public_starts, "intermediate_outcomes": [item.model_dump() for item in intermediate_outcomes],
                            "validation_errors": [], "stages": ["model_call"]}
-        for repair_attempt in range(2):
+        for repair_attempt in range(0 if adaptive else 2):
             try:
                 outcome, spawned, allowed_witnesses, resolver_event_ids, resolved_progress = await validate_candidate(raw)
                 candidate_audit["stages"].extend(["structural_validation", "semantic_validation"])
@@ -859,7 +1045,15 @@ class StoryEngine:
                     await turn_store.save_resolver_candidate(story_id, request_id, revision, fingerprint, candidate_audit, "failed")
                     raise
                 candidate_audit["repaired_candidate"] = raw
-        if group_player_stop:
+        if adaptive:
+            spawned = [roster[item.id] for item in outcome.spawned_characters]
+            allowed_witnesses = {identifier for identifier, character in roster.items() if is_present(character, scene)}
+            resolver_event_ids = {event.id for event in outcome.events}
+            resolved_progress = bool(outcome.state_changes)
+            candidate_audit.update(budget=adaptive_budget.audit(), stages=["accepted_chain", "narrative_render"])
+            outcome.scene_stop = True
+            outcome.requires_player_input = outcome.requires_player_input or adaptive_budget.stop_reason == "player"
+        elif group_player_stop:
             outcome.requires_player_input = True
             outcome.scene_stop = True
         progress_events = outcome.events
@@ -921,6 +1115,7 @@ class StoryEngine:
              "objective_progress": objective_progress,
              "extra_reaction_cycle": extra_reaction_cycle,
              "reaction_decisions": reaction_decisions,
+             "interaction_budget": adaptive_budget.audit() if adaptive else None,
              "skip_clock_tick": bool(reaction_decisions),
              "director_guidance": director_guidance, "director_model": settings.DIRECTOR_MODEL,
              "character_model": settings.CHARACTER_MODEL, "intentions": intentions,

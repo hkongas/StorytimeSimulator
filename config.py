@@ -54,6 +54,17 @@ class Settings:
     CHARACTER_MAX_TOKENS: int = int(os.getenv("CHARACTER_MAX_TOKENS", "64000"))
     CHARACTER_TEMPERATURE: float = float(os.getenv("CHARACTER_TEMPERATURE", "0.75"))
     CHARACTER_REASONING_EFFORT: str = os.getenv("CHARACTER_REASONING_EFFORT", "none")
+    # Kevyt tilanneohjain ja sen ajurille annetut rajat
+    SITUATION_MODEL: str = os.getenv("SITUATION_MODEL", "") or CHARACTER_MODEL
+    SITUATION_MAX_TOKENS: int = int(os.getenv("SITUATION_MAX_TOKENS", "4096"))
+    SITUATION_TEMPERATURE: float = float(os.getenv("SITUATION_TEMPERATURE", "0.4"))
+    SITUATION_REASONING_EFFORT: str = os.getenv("SITUATION_REASONING_EFFORT", "low")
+    SITUATION_DECISION_LIMIT: int = int(os.getenv("SITUATION_DECISION_LIMIT", "12"))
+    SITUATION_CALL_LIMIT: int = int(os.getenv("SITUATION_CALL_LIMIT", "8"))
+    SITUATION_CHARACTER_LIMIT: int = int(os.getenv("SITUATION_CHARACTER_LIMIT", "4"))
+    SITUATION_TIME_LIMIT_SECONDS: float = float(os.getenv("SITUATION_TIME_LIMIT_SECONDS", "120"))
+    SITUATION_TOKEN_LIMIT: int = int(os.getenv("SITUATION_TOKEN_LIMIT", "24000"))
+
     MAX_INPUT_TOKENS: int = int(os.getenv("MAX_INPUT_TOKENS", "64000"))
 
     # Palvelimen asetukset

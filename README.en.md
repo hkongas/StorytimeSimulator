@@ -59,7 +59,13 @@ The [simulation plan (Finnish)](SUUNNITELMA_SIMULAATIO.md) records the design an
 
 The narrator is not limited to a predefined location list. A new world entity and its consequences are validated together. Field-specific mutation contracts separate free-form descriptions from persisted identities, values, and event references. A bounded resolver repair preserves original character intentions rather than replaying the complete turn, and the corrected result must pass validation before commit.
 
-Narrator-selected decision groups can be sequential or parallel. Later characters receive only observable starts or resolved events, never private thoughts or a guaranteed outcome of an unfinished attempt. Necessary intermediate resolutions use a bounded decision budget. Explicit grouping does not start a duplicate legacy extra-reaction loop.
+The planner can request `interaction_mode: adaptive` and supply only one opening group (or none). A lightweight situation controller resolves fresh intentions and chooses subsequent groups from observed events and open attempts. New observations allow A → B → A and an initially unplanned C to react; each character–event stimulus is consumed once. An omitted mode defaults to `static`, preserving existing fake-model and old-schema behavior. Static groups can be sequential or parallel. Parallel decisions share a locked starting state without seeing each other's fresh responses. Adaptive mode and explicit static groups disable the legacy extra-reaction loop.
+
+A bounded controller-issued `RelayPermit` can relay complete speech-only utterances without another controller call. It fixes visible colocated listeners, verified source hearing, volume, channel and utterance count. **The fast path relies on the controller's correct semantic speech-only, privacy and interruption authorization; character `resolution_hint` and field checks are not semantic proof.** Missing or invalidated permission returns to the controller. Private thoughts and guaranteed outcomes of unfinished attempts never become other characters' observations.
+
+Candidate-phase limits cover character decisions, controller calls, per-character decisions, elapsed time and token reservations. The provisional budget is 48000 reserved tokens: UTF-8 bytes/3 estimates message input plus schema, with the output ceiling reserved separately. This estimator is not a hard bound on actual tokens, billed usage, or a whole-request limit. Planning, final prose and player-view calls are outside these limits. `frame_exhausted` stops rather than automatically replanning. Interruption recovery stores the candidate chain, pending boundary stimuli and next group, and blocks replay of the same request's intentions; autonomous continuation after restart is not implemented.
+
+Intermediate events, continuity, attempt results, commitments and elapsed time are merged in order. The separate `InteractionProse` schema has no event or state fields: prose renders the immutable accepted chain, and narrative plus candidate state commit atomically. A bounded prose retry receives the original accepted events and validation error, without rerunning character decisions. New world entities and characters may be added at the controller stage, not the prose stage; dedicated character-creation tests are still missing. Provider routing baseline passed 10/10, and the new situation-specific test passed separately, 1/1. Automated tests do not establish literary quality or cost savings. See the [interaction plan (Finnish)](SUUNNITELMA_VUOROVAIKUTUS.md) for implementation details and limitations.
 
 Story guidance uses three presets: **Adaptive**, **Balanced**, and **Strong**. They control world pressure and plan persistence, not voluntary player choices. Attempt outcomes, commitments, and elapsed time remain in continuity. When the current player can no longer act, continuation may end the story, switch to an eligible character, or create a separate retry story from a snapshot without rewriting the original history.
 
@@ -79,13 +85,15 @@ Undo restores characters, memories, observations, scenes and runtime from the la
 
 ## Optional Extra Reaction
 
-**One extra reaction if needed** is off by default and available in all modes, including roleplay. The request option is `extra_reaction_cycle: true`. After the resolver produces a material new event, it must identify an unresolved meaningful choice for a present, active AI character who observed that exact event. The engine checks event references, newness, progress, decision candidates and character eligibility. Possible reactions alone do not trigger it. Player decisions, scene/chapter stops, scene movement, invalid eligibility, no concrete progress, cancellation and the one-cycle cap stop automatic continuation.
+**One extra reaction if needed** is a default-off legacy feature for the static path without explicit groups, including roleplay. The request option is `extra_reaction_cycle: true`. Adaptive reactions do not require it; adaptive mode and explicit decision groups suppress the duplicate extra cycle. After the resolver produces a material new event, it must identify an unresolved meaningful choice for a present, active AI character who observed that exact event. The engine checks event references, newness, progress, decision candidates and character eligibility. Possible reactions alone do not trigger it. Player decisions, scene/chapter stops, scene movement, invalid eligibility, no concrete progress, cancellation and the one-cycle cap stop automatic continuation.
 
 The followup skips world planning and clock ticks, calls only eligible AI characters and resolves their fresh intentions. It never submits another player action, repeats the original action or reuses the world intervention. Both cycles share one locked, SSE-monitored cancellable job, with at most one extra decision/consequence cycle. Model calls can increase latency and cost; semantic event/choice quality still needs real-model evaluation.
 
 Each cycle commits a separate atomic turn with its own receipt, recovery record, snapshot and player view. The first receipt links to the followup before it starts. Replaying the original request returns the committed followup if available, otherwise the first turn; interrupted or failed followups are never automatically resumed. Cancellation preserves committed turns. A followup without concrete progress is discarded. Undo removes the latest cycle only (undo twice to remove both); replay after undo is rejected. Default-off request fingerprints remain compatible with earlier receipts.
 
 ## Turn Data Flow
+
+The static compatibility path resolves intentions and writes prose in the same response. In planner-requested adaptive mode, character decisions alternate with lightweight situation resolution, followed by a separate prose call that cannot modify the accepted event chain. Both paths preserve atomic commit and per-character observation boundaries.
 
 ```text
 Story state and revision
@@ -155,6 +163,21 @@ During development, run only test methods, classes or modules related to the cha
 ```powershell
 python -m unittest -v tests.test_engine.StorageTests.test_current_schema_initialization_is_repeatable tests.test_engine.StorageTests.test_legacy_database_is_rejected_without_migration tests.test_engine.StorageTests.test_incomplete_database_is_rejected_without_repair
 ```
+
+Parent-reported final targeted validation:
+
+| Run / selector | Result | Runner / wall |
+| --- | --- | --- |
+| `tests.test_adaptive_interaction` (completed module) | 18/18 passed | 5.331 s / 5.764 s |
+| Adaptive interaction, simulation and turn contract (before the module's latest three tests; selectors below) | 26/26 passed | 8.682 s / 9.101 s |
+| Provider/Azure/API routing baseline (selectors below) | 10/10 passed | 0.714 s / 2.909 s |
+| `node --test tests\test_simulation_frontend.cjs tests\test_frontend.cjs` | 10/10 passed | 0.440 s / 0.525 s |
+
+Combined-run selectors: `tests.test_adaptive_interaction`, `tests.test_simulation_plan.SimulationUnitTests`, `tests.test_simulation_plan.SimulationStorageTests.test_integrated_intermediate_resolution_is_atomic`, `tests.test_simulation_plan.SimulationStorageTests.test_same_response_creation_elapsed_attempt_and_commitment`, `tests.test_turn_contract.TurnContractTests.test_history_compression_is_separate_from_resolver`, and `tests.test_turn_contract.TurnContractTests.test_expired_clock_fires_once_without_omniscient_observers`.
+
+Routing baseline: `tests.test_engine.ProviderTests`, `tests.test_engine.AzureTransportTests`, `tests.test_api.ApiTests.test_profile_secrets_are_not_returned`, and `tests.test_api.ApiTests.test_gemini_profile_key_stays_server_side`. The completed adaptive module covers the situation role model and defaults.
+
+Earlier regressions were fixed and these runs passed; no full-project regression run is claimed, and overlapping tests are not summed. Storage tests isolate a 48000 budget from the user's `.env`. Module coverage includes public SSE phases during collection, unchanged events on prose retry, cancellation cleanup, and player seed → NPC → new player choice without a generated player answer, with the pending reaction persisted. An adaptive sequential group contains exactly one actor; multiple actors are allowed only in a parallel group sharing a locked moment. Final prose returns no event/state fields and retains tone guidance, not full resolver instructions. Dedicated new-character tests and real-model quality/savings comparisons remain outstanding. No tests were run for this documentation update.
 
 A whole class: `python -m unittest -v tests.test_engine.StorageTests`. A module: `python -m unittest -v tests.test_turn_contract`. On Windows, invoke the virtual environment directly with `& .\venv\Scripts\python.exe -m unittest -v <tests>`.
 

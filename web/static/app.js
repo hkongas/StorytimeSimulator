@@ -1484,6 +1484,10 @@ function createProfile(provider, name) {
     character_max_tokens: 64000,
     character_temperature: 0.75,
     character_reasoning_effort: "low",
+    situation_model: provider === "gemini" ? "gemini-3.5-flash-lite" : provider === "azure" ? "gpt-4o" : "grok-4.3",
+    situation_max_tokens: 4096,
+    situation_temperature: 0.4,
+    situation_reasoning_effort: "low",
   };
 }
 
@@ -1576,7 +1580,7 @@ function updateTemperatureControl(modelId, temperatureId, noteId) {
 function updateTemperatureControls() {
   const azure = document.getElementById('settingProvider')?.value === 'azure';
   const v1 = document.getElementById('settingAzureApiMode')?.value === 'v1';
-  for (const [labelId, modelId] of [['directorTokenLabel', 'settingDirectorModel'], ['characterTokenLabel', 'settingCharModel']]) {
+  for (const [labelId, modelId] of [['directorTokenLabel', 'settingDirectorModel'], ['characterTokenLabel', 'settingCharModel'], ['situationTokenLabel', 'settingSituationModel']]) {
     const label = document.getElementById(labelId);
     const model = document.getElementById(modelId)?.value.trim() || '';
     if (label) label.textContent = azure && (v1 || /^(gpt-[56]|o[134])/i.test(model))
@@ -1584,6 +1588,7 @@ function updateTemperatureControls() {
   }
   updateTemperatureControl("settingDirectorModel", "settingDirectorTemp", "settingDirectorTempNote");
   updateTemperatureControl("settingCharModel", "settingCharTemp", "settingCharTempNote");
+  updateTemperatureControl("settingSituationModel", "settingSituationTemp", "settingSituationTempNote");
 }
 
 function populateSettingsProfile(profile) {
@@ -1608,6 +1613,10 @@ function populateSettingsProfile(profile) {
   setInputValue("settingCharMaxTokens", profile.character_max_tokens);
   setInputValue("settingCharTemp", profile.character_temperature);
   setInputValue("settingCharReasoning", profile.character_reasoning_effort || "low");
+  setInputValue("settingSituationModel", profile.situation_model || profile.character_model);
+  setInputValue("settingSituationMaxTokens", profile.situation_max_tokens ?? 4096);
+  setInputValue("settingSituationTemp", profile.situation_temperature ?? 0.4);
+  setInputValue("settingSituationReasoning", profile.situation_reasoning_effort || "low");
   toggleProviderSettings(profile.provider);
   updateTemperatureControls();
 }
@@ -1633,6 +1642,11 @@ function profileFromForm(profileId) {
     character_max_tokens: Number(document.getElementById("settingCharMaxTokens")?.value || 64000),
     character_temperature: Number(document.getElementById("settingCharTemp")?.value || 0.75),
     character_reasoning_effort: document.getElementById("settingCharReasoning")?.value || "low",
+    situation_model: document.getElementById("settingSituationModel")?.value.trim()
+      || document.getElementById("settingCharModel")?.value.trim() || "grok-4.3",
+    situation_max_tokens: Number(document.getElementById("settingSituationMaxTokens")?.value || 4096),
+    situation_temperature: Number(document.getElementById("settingSituationTemp")?.value || 0.4),
+    situation_reasoning_effort: document.getElementById("settingSituationReasoning")?.value || "low",
   };
 }
 
@@ -1704,6 +1718,10 @@ async function silentlySyncActiveProfileToBackend(profile) {
   if (!profile) return;
   try {
     const payload = {
+      situation_model: profile.situation_model || profile.character_model,
+      situation_max_tokens: profile.situation_max_tokens ?? 4096,
+      situation_temperature: profile.situation_temperature ?? 0.4,
+      situation_reasoning_effort: profile.situation_reasoning_effort || "low",
       profile_id: profile.id,
       llm_provider: profile.provider,
       xai_api_key: profile.xai_api_key,
@@ -1762,6 +1780,10 @@ async function loadSettings() {
       profile.character_max_tokens = data.character_max_tokens || profile.character_max_tokens;
       profile.character_temperature = data.character_temperature ?? profile.character_temperature;
       profile.character_reasoning_effort = data.character_reasoning_effort || profile.character_reasoning_effort;
+      profile.situation_model = data.situation_model || profile.character_model;
+      profile.situation_max_tokens = data.situation_max_tokens ?? 4096;
+      profile.situation_temperature = data.situation_temperature ?? 0.4;
+      profile.situation_reasoning_effort = data.situation_reasoning_effort || "low";
       profiles = [profile];
       saveSettingsProfiles(profiles);
       setActiveSettingsProfileId(profile.id);
@@ -1796,6 +1818,10 @@ async function saveSettings() {
 
   try {
     const payload = {
+      situation_model: profile.situation_model || profile.character_model,
+      situation_max_tokens: profile.situation_max_tokens ?? 4096,
+      situation_temperature: profile.situation_temperature ?? 0.4,
+      situation_reasoning_effort: profile.situation_reasoning_effort || "low",
       profile_id: profile.id,
       llm_provider: profile.provider,
       xai_api_key: profile.xai_api_key,

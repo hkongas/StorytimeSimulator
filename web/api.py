@@ -940,6 +940,16 @@ class SettingsUpdate(BaseModel):
     character_temperature: Optional[float] = None
     character_reasoning_effort: Optional[str] = None
 
+    situation_model: Optional[str] = None
+    situation_max_tokens: Optional[int] = None
+    situation_temperature: Optional[float] = None
+    situation_reasoning_effort: Optional[str] = None
+    situation_decision_limit: Optional[int] = None
+    situation_call_limit: Optional[int] = None
+    situation_character_limit: Optional[int] = None
+    situation_time_limit_seconds: Optional[float] = None
+    situation_token_limit: Optional[int] = None
+
 @app.get("/api/settings")
 async def get_settings():
     return {
@@ -961,7 +971,17 @@ async def get_settings():
         "character_model": settings.CHARACTER_MODEL,
         "character_max_tokens": settings.CHARACTER_MAX_TOKENS,
         "character_temperature": settings.CHARACTER_TEMPERATURE,
-        "character_reasoning_effort": settings.CHARACTER_REASONING_EFFORT
+        "character_reasoning_effort": settings.CHARACTER_REASONING_EFFORT,
+
+        "situation_model": settings.SITUATION_MODEL or settings.CHARACTER_MODEL,
+        "situation_max_tokens": settings.SITUATION_MAX_TOKENS,
+        "situation_temperature": settings.SITUATION_TEMPERATURE,
+        "situation_reasoning_effort": settings.SITUATION_REASONING_EFFORT,
+        "situation_decision_limit": settings.SITUATION_DECISION_LIMIT,
+        "situation_call_limit": settings.SITUATION_CALL_LIMIT,
+        "situation_character_limit": settings.SITUATION_CHARACTER_LIMIT,
+        "situation_time_limit_seconds": settings.SITUATION_TIME_LIMIT_SECONDS,
+        "situation_token_limit": settings.SITUATION_TOKEN_LIMIT
     }
 
 class ProfileKeyTransfer(BaseModel):
@@ -1017,6 +1037,15 @@ async def update_settings(req: SettingsUpdate):
         settings.CHARACTER_TEMPERATURE = req.character_temperature
     if req.character_reasoning_effort is not None:
         settings.CHARACTER_REASONING_EFFORT = req.character_reasoning_effort
+
+    for name in (
+        "situation_model", "situation_max_tokens", "situation_temperature",
+        "situation_reasoning_effort", "situation_decision_limit", "situation_call_limit",
+        "situation_character_limit", "situation_time_limit_seconds", "situation_token_limit"
+    ):
+        value = getattr(req, name)
+        if value is not None:
+            setattr(settings, name.upper(), value)
 
     # Uudelleenalustetaan enginen LLM-asiakas
     for name, value in req.model_dump(exclude_none=True).items():

@@ -332,6 +332,7 @@ class ProseTurnResponse(ResolverResponse):
         return value
 
 class PlannerResponse(BaseModel):
+    interaction_mode: Literal["static", "adaptive"] = Field(default="static", description="Adaptive: supply only the initial group; situation controller chooses subsequent reactions")
     elapsed_time: Optional[ElapsedTime] = None
     decision_groups: List[DecisionGroup] = Field(default_factory=list, max_length=8)
     stop_condition: str = ""
@@ -346,7 +347,57 @@ class PlannerResponse(BaseModel):
     bible_additions: StoryBibleResponse = Field(default_factory=StoryBibleResponse)
 
 
+class ReactionGroup(BaseModel):
+    mode: Literal["sequential", "parallel"] = "parallel"
+    reactions: List[PendingReactionDecision] = Field(min_length=1, max_length=20)
+
+
+class RelayPermit(BaseModel):
+    source_event_id: str
+    participant_ids: List[str] = Field(min_length=2, max_length=20)
+    max_utterances: int = Field(ge=1, le=6)
+    volume: Literal["whisper", "normal", "shout"] = "normal"
+    modality: Literal["heard"] = "heard"
+
+
+class InteractionProse(BaseModel):
+    model_config = {"extra": "forbid"}
+    prose: str = Field(min_length=1)
+    choices: List[str] = Field(default_factory=list, max_length=5)
+    chapter_title: str = Field(default="", max_length=160)
+    image_prompt: str = ""
+    consistency_issues: List[str] = Field(default_factory=list)
+
+
+class SituationResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+    events: List[StoryEvent] = Field(default_factory=list, max_length=30)
+    state_changes: List[StateChange] = Field(default_factory=list)
+    character_state_updates: List[CharacterStateUpdate] = Field(default_factory=list)
+    entity_additions: EntityAdditions = Field(default_factory=EntityAdditions)
+    spawned_characters: List[StoryInitCharacter] = Field(default_factory=list)
+    location: Optional[SceneLocation] = None
+    active_character_ids: Optional[List[str]] = None
+    truth_access_updates: List[TruthAccessUpdate] = Field(default_factory=list)
+    bible_additions: StoryBibleResponse = Field(default_factory=StoryBibleResponse)
+    attempt_results: List[AttemptResult] = Field(default_factory=list)
+    commitments: List[Commitment] = Field(default_factory=list)
+    elapsed_time: ElapsedTime = Field(default_factory=lambda: ElapsedTime(clock_beats=0))
+    continuity: ContinuityDelta = Field(default_factory=ContinuityDelta)
+    recap_delta: str = Field(default="", max_length=1200)
+    next_group: Optional[ReactionGroup] = None
+    relay_permit: Optional[RelayPermit] = None
+    failure_policy: Literal["continue", "end", "switch_or_retry"] = "continue"
+    chapter_end: bool = False
+    stop_reason: Literal["continue", "player", "ended", "waiting", "frame_exhausted"] = "ended"
+    reason: str = Field(default="", max_length=600)
+    consistency_issues: List[str] = Field(default_factory=list)
+
+
 class CharacterDecisionResponse(BaseModel):
+    interaction_kind: Literal["attempt", "speech", "wait"] = Field(default="attempt", description="Speech-only means this complete utterance has no concurrent action; a hint, not permission to choose observers")
+    suggested_recipient_ids: List[str] = Field(default_factory=list)
+    resolution_hint: bool = Field(default=True, description="Hint only; the controller or a verified relay permit authorizes delivery")
     public_start: Optional[PublicStart] = Field(default=None, description="Only currently observable onset or complete utterance, never intended outcomes or private plans")
     goal: str = Field(description="The character's current goal")
     time_horizon: str = Field(description="How long this goal-level action should take")

@@ -113,6 +113,11 @@ class LLMClient:
             target_temp = temperature if temperature is not None else settings.CHARACTER_TEMPERATURE
             target_tokens = max_tokens if max_tokens is not None else settings.CHARACTER_MAX_TOKENS
             target_reasoning = reasoning_effort or settings.CHARACTER_REASONING_EFFORT
+        elif role == "situation":
+            target_model = model or settings.SITUATION_MODEL or settings.CHARACTER_MODEL
+            target_temp = temperature if temperature is not None else settings.SITUATION_TEMPERATURE
+            target_tokens = max_tokens if max_tokens is not None else settings.SITUATION_MAX_TOKENS
+            target_reasoning = reasoning_effort or settings.SITUATION_REASONING_EFFORT
         else:
             target_model = model or settings.DIRECTOR_MODEL
             target_temp = temperature if temperature is not None else settings.DIRECTOR_TEMPERATURE

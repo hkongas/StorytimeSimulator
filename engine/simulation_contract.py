@@ -45,6 +45,8 @@ async def collect_groups(groups, decide, roster, player_id=None, resolve_interme
         if group.requires_resolved_outcome:
             if not resolve_intermediate or not intentions:
                 raise ValueError("Outcome-dependent choice requires an intermediate resolution")
+            for start in starts:
+                start["resolution_phase"] = len(intermediate)
             resolved = await resolve_intermediate(intentions[resolved_count:], starts, intermediate)
             resolved_count = len(intentions)
             intermediate.append(resolved)
@@ -103,8 +105,8 @@ def add_public_start(decision, starts, roster):
                    "text": start["text"], "modality": start.get("modality", "heard"), "observer_ids": observers})
 
 
-async def normalize_additions(story_id, outcome, roster):
-    world = await db.get_planning_world(story_id)
+async def normalize_additions(story_id, outcome, roster, candidate_world=None):
+    world = candidate_world or await db.get_planning_world(story_id)
     locations = {item["id"]: item for item in world["locations"]}
     items = {item["id"]: item for item in world["items"]}
     relationships = {item["character_a"] + "|" + item["character_b"]: item for item in world["relationships"]}
