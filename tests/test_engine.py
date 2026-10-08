@@ -433,10 +433,70 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await db.get_story_meta("missing"))
         self.assertFalse((settings.STORIES_DIR / "missing").exists())
 
-    async def test_migration_is_repeatable(self):
+    async def test_current_schema_initialization_is_repeatable(self):
         await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
         await db.init_story_db("test")
         self.assertEqual((await db.get_story_meta("test")).title, "Original")
+
+    async def test_existing_current_database_is_validated_after_cache_reset(self):
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        db._verified_schemas.pop(db.get_db_path("test"), None)
+        await db.init_story_db("test")
+        self.assertEqual((await db.get_story_meta("test")).title, "Original")
+        self.assertIn(db.get_db_path("test"), db._verified_schemas)
+
+    async def test_schema_checks_are_cached_across_data_writes(self):
+        import aiosqlite
+        from unittest.mock import patch
+
+        statements = []
+        execute = aiosqlite.Connection.execute
+
+        def recording_execute(connection, sql, *args, **kwargs):
+            statements.append(sql)
+            return execute(connection, sql, *args, **kwargs)
+
+        db._schema_requirements.cache_clear()
+        with patch.object(aiosqlite.Connection, "execute", recording_execute):
+            await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+            statements.clear()
+            await db.save_story_meta("test", StoryMeta(id="test", title="Changed"))
+            self.assertEqual((await db.get_story_meta("test")).title, "Changed")
+        self.assertFalse(any("table_info" in sql or "sqlite_master" in sql for sql in statements))
+        self.assertEqual(db._schema_requirements.cache_info().misses, 1)
+
+    async def test_schema_cache_revalidates_after_database_replacement(self):
+        import aiosqlite
+
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        replacement = Path(self.temporary.name) / "replacement.db"
+        async with aiosqlite.connect(replacement) as connection:
+            await connection.execute("CREATE TABLE story_meta (id TEXT)")
+            await connection.execute("PRAGMA user_version = 9")
+            await connection.commit()
+            async with connection.execute("PRAGMA schema_version") as cursor:
+                replacement_version = (await cursor.fetchone())[0]
+        async with aiosqlite.connect(db.get_db_path("test")) as connection:
+            await connection.execute(f"PRAGMA schema_version = {replacement_version}")
+        await db.init_story_db("test")
+        replacement.replace(db.get_db_path("test"))
+        with self.assertRaisesRegex(ValueError, "migraatioita ei tueta"):
+            await db.init_story_db("test")
+
+    async def test_schema_cache_revalidates_after_schema_file_change(self):
+        from unittest.mock import patch, mock_open
+
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        with patch("database.db.open", mock_open(read_data="CREATE TABLE story_meta (id TEXT);")):
+            with self.assertRaisesRegex(ValueError, "skeematiedosto on puutteellinen"):
+                await db.init_story_db("test")
+        self.assertEqual((await db.get_story_meta("test")).title, "Original")
+
+    async def test_schema_cache_allows_recreation_after_deletion(self):
+        await db.save_story_meta("test", StoryMeta(id="test", title="Original"))
+        self.assertTrue(await db.delete_story("test"))
+        await db.save_story_meta("test", StoryMeta(id="test", title="Recreated"))
+        self.assertEqual((await db.get_story_meta("test")).title, "Recreated")
 
     async def test_api_logging_in_fresh_database(self):
         await db.log_api_call("test", "director", "azure-test", 0.1,

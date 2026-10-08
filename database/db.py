@@ -6,7 +6,9 @@ import shutil
 import sqlite3
 import logging
 import re
+from collections import OrderedDict
 from contextlib import closing
+from functools import lru_cache
 import aiosqlite
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -15,6 +17,8 @@ from core.types import StoryMeta, Character, CharacterMemory, Scene, SceneTurn, 
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _initialization_locks: Dict[Path, asyncio.Lock] = {}
+_verified_schemas = OrderedDict()
+_SCHEMA_CACHE_LIMIT = 256
 logger = logging.getLogger("uvicorn.error.tarinamoottori.database")
 
 def get_story_dir(story_id: str) -> Path:
@@ -38,11 +42,8 @@ async def init_story_db(story_id: str):
         await _initialize_story_db(story_id)
 
 
-async def _initialize_story_db(story_id: str):
-    """Creates the current development schema without migrating older databases."""
-    db_path = get_db_path(story_id)
-    with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
-        schema_sql = f.read()
+@lru_cache(maxsize=4)
+def _schema_requirements(schema_sql: str):
     required_tables = {"story_revision", "story_runtime", "turn_receipts", "turn_snapshots", "prose_edits",
                        "character_observations", "story_meta", "chronicle_entries", "characters",
                        "character_memories", "scenes", "scene_turns", "api_calls", "secret_truths",
@@ -57,8 +58,39 @@ async def _initialize_story_db(story_id: str):
         missing = ", ".join(sorted(required_tables - schema_tables))
         raise ValueError(f"Tietokannan skeematiedosto on puutteellinen: {missing}. Tarkista schema.sql ja pilvisynkronointi.")
 
+    return required_tables, required_columns
+
+
+async def _schema_cache_key(connection, db_path: Path, schema_sql: str):
+    stat = db_path.stat()
+    async with connection.execute(
+        "SELECT schema_version, user_version FROM pragma_schema_version, pragma_user_version"
+    ) as cursor:
+        versions = tuple(await cursor.fetchone())
+    # Ordinary data writes do not change schema_version; DDL and version edits do.
+    return (stat.st_dev, stat.st_ino, getattr(stat, "st_birthtime_ns", 0), schema_sql, versions)
+
+
+def _remember_schema(db_path: Path, key):
+    _verified_schemas[db_path] = key
+    _verified_schemas.move_to_end(db_path)
+    while len(_verified_schemas) > _SCHEMA_CACHE_LIMIT:
+        _verified_schemas.popitem(last=False)
+
+
+async def _initialize_story_db(story_id: str):
+    """Creates the current development schema without migrating older databases."""
+    db_path = get_db_path(story_id)
+    with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+        schema_sql = f.read()
+    required_tables, required_columns = _schema_requirements(schema_sql)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(db_path) as db:
+        key = await _schema_cache_key(db, db_path, schema_sql)
+        if _verified_schemas.get(db_path) == key:
+            _verified_schemas.move_to_end(db_path)
+            return
+        _verified_schemas.pop(db_path, None)
         async with db.execute("SELECT name FROM sqlite_master WHERE type = 'table'") as cursor:
             existing_tables = {row[0] for row in await cursor.fetchall()}
         if existing_tables:
@@ -85,6 +117,7 @@ async def _initialize_story_db(story_id: str):
                     raise ValueError("Tarinan tietokannan rakenne on vanhentunut tai puutteellinen. Luo tarina uudelleen.")
             await db.execute("CREATE TABLE IF NOT EXISTS resolver_candidates (request_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, audit_json TEXT NOT NULL, status TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
             await db.commit()
+            _remember_schema(db_path, await _schema_cache_key(db, db_path, schema_sql))
             return
         await db.executescript("BEGIN IMMEDIATE;\n" + schema_sql)
         for table in ("story_meta", "characters", "character_memories", "scenes", "scene_turns", "story_runtime", "chronicle_entries",
@@ -100,6 +133,7 @@ async def _initialize_story_db(story_id: str):
         await db.execute("CREATE INDEX IF NOT EXISTS snapshots_by_branch ON turn_snapshots(branch_id, turn_id)")
         await db.execute("PRAGMA user_version = 9")
         await db.commit()
+        _remember_schema(db_path, await _schema_cache_key(db, db_path, schema_sql))
 
 # --- Tarinan metatiedot ---
 

@@ -150,9 +150,23 @@ Legacy chronicle, perceptual-filter, and watchdog functions remain in the source
 
 ## Tests
 
+During development, run only test methods, classes or modules related to the change, combined in one command. For example, for database schema validation changes:
+
+```powershell
+python -m unittest -v tests.test_engine.StorageTests.test_current_schema_initialization_is_repeatable tests.test_engine.StorageTests.test_legacy_database_is_rejected_without_migration tests.test_engine.StorageTests.test_incomplete_database_is_rejected_without_repair
+```
+
+A whole class: `python -m unittest -v tests.test_engine.StorageTests`. A module: `python -m unittest -v tests.test_turn_contract`. On Windows, invoke the virtual environment directly with `& .\venv\Scripts\python.exe -m unittest -v <tests>`.
+
+The parent agent coordinates validation: subagents report required tests and do not duplicate runs unless explicitly assigned. Report selectors and elapsed time. Change a test only when its expectation is proven incorrect or requirements change, never to conceal a failure. Run the full suite at a separately agreed regression checkpoint or when targeted results show a wider need:
+
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+The reference schema is cached by SQL contents. Already validated databases use a lightweight schema/version query instead of full validation on ordinary data writes. Changes to the schema, version, schema file or database file identity trigger full validation. Legacy and incomplete database rejection tests remain necessary; they do not imply support for old schemas.
+
+Environment: use the project virtual environment and a local SSD. Cloud-synced project folders can slow source and package reads; a local clone and local virtual environment avoid this overhead. `tempfile` tests use the system temporary directory: keep `TEMP`/`TMP` on a local disk. Do not disable security software; measure scanning overhead before any organization-approved scoped adjustments. Test classes modify the shared `settings.STORIES_DIR`, so do not parallelize them within one process; parallel runs require separate processes and storage directories.
 
 Frontend timestamp and structure regressions can run separately with Node.js (only for testing, not application use):
 

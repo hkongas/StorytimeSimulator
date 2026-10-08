@@ -167,9 +167,23 @@ Vanhoja kronikoitsija-, aistisuodatin- ja valvojatoimintoja on edelleen lähdeko
 
 ## Testit
 
+Kehitystyössä ajetaan vain muutokseen liittyvät testimetodit, luokat tai moduulit, samassa komennossa. Esimerkiksi tietokannan skeematarkistuksen muutokselle:
+
+```powershell
+python -m unittest -v tests.test_engine.StorageTests.test_current_schema_initialization_is_repeatable tests.test_engine.StorageTests.test_legacy_database_is_rejected_without_migration tests.test_engine.StorageTests.test_incomplete_database_is_rejected_without_repair
+```
+
+Kokonainen testiluokka: `python -m unittest -v tests.test_engine.StorageTests`. Moduuli: `python -m unittest -v tests.test_turn_contract`. Windowsissa virtuaaliympäristön tulkkia voi käyttää suoraan: `& .\venv\Scripts\python.exe -m unittest -v <testit>`.
+
+Pääagentti koordinoi testauksen: aliagentit ilmoittavat tarvittavat testit eivätkä aja samoja tarkistuksia uudestaan ilman erillistä toimeksiantoa. Testitulos raportoidaan valitsimineen ja kestoineen. Testiä muutetaan vain, jos sen odotus on todistetusti väärä tai vaatimus muuttuu, ei virheen peittämiseksi. Koko testipaketti ajetaan erillisessä sovitussa regressiotarkistuksessa tai kun kohdennetut tulokset osoittavat laajemman tarpeen:
+
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+Skeeman vertailurakenne välimuistitetaan SQL-sisällön perusteella. Jo tarkistettu tietokanta tarvitsee vain kevyen skeema- ja versiokyselyn: tavalliset tietomuutokset eivät aiheuta täyttä uusintatarkistusta. Skeeman, version, skeematiedoston tai tietokantatiedoston identiteetin muutos käynnistää täyden tarkistuksen. Vanhojen ja puutteellisten tietokantojen hylkäystestit ovat edelleen tarpeellisia; ne eivät edellytä vanhojen skeemojen tukemista.
+
+Ympäristö: käytä projektin virtuaaliympäristöä ja paikallista SSD-levyä. Pilvisynkronoitu projektikansio voi hidastaa lähdekoodin ja pakettien lukua; paikallinen klooni ja paikallinen virtuaaliympäristö välttävät tämän. `tempfile`-testit käyttävät järjestelmän väliaikaiskansiota: pidä `TEMP`/`TMP` paikallisella levyllä. Älä kytke tietoturvaohjelmistoa pois päältä. Mahdollinen tarkistuskuorma pitää mitata ennen organisaation hyväksymiä rajattuja muutoksia. Testiluokat muuttavat yhteistä `settings.STORIES_DIR`-asetusta, joten niitä ei pidä rinnakkaistaa samassa prosessissa; mahdollinen rinnakkaisajo vaatii erilliset prosessit ja tallennuskansiot.
 
 Käyttöliittymän aikaleima- ja rakenne-regressiot voi ajaa erikseen Node.js:llä (vain testaukseen, ei sovelluksen käyttöön):
 
