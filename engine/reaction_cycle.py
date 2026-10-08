@@ -16,7 +16,7 @@ def eligible_reaction_decisions(outcome, roster, scene, mode, objective_progress
                 or not character or character.status != "active"
                 or character.id not in outcome.active_character_ids
                 or character.id not in scene.active_character_ids
-                or character.location_id not in {None, db.location_identifier(scene.location)}
+                or character.location_id != (scene.location_id or db.location_identifier(scene.location))
                 or character.id not in event.witnesses
                 or not event.observation_for(character.id).strip()
                 or character.id not in outcome.decision_character_ids):

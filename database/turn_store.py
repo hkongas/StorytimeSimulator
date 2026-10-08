@@ -348,6 +348,11 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
             if current_id != expected_last_id:
                 raise TurnConflictError("Tarina muuttui generoinnin aikana. Lataa tarina uudelleen.")
             before = await _capture_state(connection)
+            from engine.turn_contract import validate_event_links
+            from engine.simulation_contract import consequence_links
+            validate_event_links(outcome.events, consequence_links(outcome))
+            if outcome.consistency_issues:
+                raise ValueError("Unresolved prose/event/state inconsistency")
             _save_recovery(story_id, {
                 "story_id": story_id, "expected_last_id": expected_last_id,
                 "expected_revision": revision, "before": before,
@@ -355,10 +360,21 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                 "outcome": outcome.model_dump(mode="json"), "response": response.model_dump(mode="json"),
                 "fingerprint": fingerprint, "audit": audit
             })
+            if turn.director_prose != outcome.prose or response.director_prose != outcome.prose:
+                raise ValueError("Stored prose, outcome and response disagree")
+            for addition in outcome.entity_additions.locations:
+                await connection.execute("INSERT INTO locations (id, name, description) VALUES (?, ?, ?)",
+                                         (addition.id, addition.name, addition.description))
+            for addition in outcome.entity_additions.items:
+                await connection.execute("INSERT INTO items (id, name, holder_character_id, location_id, state) VALUES (?, ?, ?, ?, ?)",
+                                         (addition.id, addition.name, addition.holder_character_id, addition.location_id, addition.state))
+            for addition in outcome.entity_additions.relationships:
+                await connection.execute("INSERT INTO relationships (character_a, character_b, attitude, trust, summary) VALUES (?, ?, ?, ?, ?)",
+                                         (addition.character_a, addition.character_b, addition.attitude, addition.trust, addition.summary))
             if outcome.scene_location:
                 await connection.execute(
                     "INSERT OR IGNORE INTO locations (id, name) VALUES (?, ?)",
-                    (db.location_identifier(outcome.scene_location), outcome.scene_location)
+                    (outcome.location.id if outcome.location else db.location_identifier(outcome.scene_location), outcome.scene_location)
                 )
             for character in characters:
                 values = character.model_dump(exclude={"created_at"})
@@ -441,7 +457,7 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
             for (clock_id,) in clock_rows:
                 await connection.execute(
                     "UPDATE clocks SET remaining_beats = MAX(0, remaining_beats - ? - ?) WHERE id = ?",
-                    (0 if audit.get("skip_clock_tick") else 1, ticks.get(clock_id, 0), clock_id)
+                    (0 if audit.get("skip_clock_tick") else (plan["elapsed_time"]["clock_beats"] if plan.get("elapsed_time") else outcome.elapsed_time.clock_beats), ticks.get(clock_id, 0), clock_id)
                 )
             for agent_id, move in plan.get("offscreen_moves", {}).items():
                 await connection.execute(
@@ -494,22 +510,34 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
             state["chapter_title"] = outcome.chapter_title or previous_state.get("chapter_title", "")
             state["player_views"] = audit.get("player_views", previous_state.get("player_views", {}))
             state["initial_reading"] = previous_state.get("initial_reading", {})
+            if "branch_source" in previous_state:
+                state["branch_source"] = previous_state["branch_source"]
             if outcome.chapter_end:
                 state["chapter_title"] = ""
             state["mode"] = response.mode
+            state["plot_guidance"] = audit.get("plot_guidance", previous_state.get("plot_guidance", "balanced"))
+            state["decision_budget"] = audit.get("decision_budget", previous_state.get("decision_budget", 4))
+            state["attempt_results"] = dict(previous_state.get("attempt_results", {}))
+            state["attempt_results"].update({item.intent_id: item.model_dump() for item in outcome.attempt_results})
+            state["commitments"] = dict(previous_state.get("commitments", {}))
+            state["commitments"].update({item.id: item.model_dump() for item in outcome.commitments})
+            state["elapsed_total_seconds"] = previous_state.get("elapsed_total_seconds", 0) + outcome.elapsed_time.amount * {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86400}[outcome.elapsed_time.unit]
+            state["repetition_assessment"] = outcome.repetition_assessment
+            state["failure_policy"] = outcome.failure_policy
+            state["scene_stop"] = outcome.scene_stop
             state["no_progress_beats"] = (0 if audit.get("objective_progress") else int(previous_state.get("no_progress_beats", 0)) + 1)
             await connection.execute(
                 "INSERT INTO story_runtime VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json",
                 (json.dumps(state),)
             )
             await connection.execute(
-                "UPDATE scenes SET active_character_ids = ?, location = COALESCE(?, location), scene_goal = COALESCE(?, scene_goal) WHERE id = ?",
-                (json.dumps(outcome.active_character_ids), outcome.scene_location, outcome.scene_goal, turn.scene_id)
+                "UPDATE scenes SET active_character_ids = ?, location = COALESCE(?, location), location_id = COALESCE(?, location_id), scene_goal = COALESCE(?, scene_goal) WHERE id = ?",
+                (json.dumps(outcome.active_character_ids), outcome.scene_location, outcome.location.id if outcome.location else None, outcome.scene_goal, turn.scene_id)
             )
             if outcome.chapter_end:
                 await connection.execute("UPDATE scenes SET is_active = 0 WHERE id = ?", (turn.scene_id,))
                 await connection.execute(
-                    "INSERT INTO scenes (chapter_number, location, scene_goal, active_character_ids, is_active) SELECT chapter_number + 1, location, scene_goal, active_character_ids, 1 FROM scenes WHERE id = ?",
+                    "INSERT INTO scenes (chapter_number, location, location_id, scene_goal, active_character_ids, is_active) SELECT chapter_number + 1, location, location_id, scene_goal, active_character_ids, 1 FROM scenes WHERE id = ?",
                     (turn.scene_id,)
                 )
             await connection.execute("UPDATE story_meta SET updated_at = CURRENT_TIMESTAMP")
@@ -529,6 +557,7 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                 "INSERT INTO turn_snapshots (turn_id, request_id, before_json, after_json) VALUES (?, ?, ?, ?)",
                 (turn_id, response.request_id, _encode_snapshot(before), _encode_snapshot(await _capture_state(connection)))
             )
+            await connection.execute("UPDATE resolver_candidates SET status = 'committed' WHERE request_id = ?", (response.request_id,))
             await connection.commit()
         except BaseException:
             await connection.rollback()
@@ -634,3 +663,147 @@ async def rebuild_exports(story_id: str):
         temporary = target.with_suffix(target.suffix + f".{uuid4().hex}.tmp")
         temporary.write_text(text, encoding="utf-8")
         temporary.replace(target)
+
+async def save_resolver_candidate(story_id, request_id, revision, fingerprint, audit, status):
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        await connection.execute("INSERT INTO resolver_candidates (request_id, revision, fingerprint, audit_json, status) VALUES (?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET audit_json = excluded.audit_json, status = excluded.status",
+                                 (request_id, revision, fingerprint, json.dumps(audit, ensure_ascii=False, default=str), status))
+        await connection.commit()
+
+
+async def get_resolver_candidate(story_id, request_id, fingerprint=None):
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute("SELECT revision, fingerprint, audit_json, status FROM resolver_candidates WHERE request_id = ?", (request_id,)) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    if fingerprint is not None and fingerprint != row[1]:
+        raise TurnConflictError("Request ID belongs to a different retained candidate")
+    return {"revision": row[0], "fingerprint": row[1], "audit": json.loads(row[2]), "status": row[3]}
+
+
+async def get_failure_options(story_id):
+    scene = await db.get_active_scene(story_id)
+    characters = await db.get_all_characters(story_id)
+    from engine.simulation_contract import is_present
+    eligible = [character.id for character in characters if scene and character.status == "active" and is_present(character, scene) and character.id in scene.active_character_ids
+                and (character.visibility_state == "visible" or character.is_player_controlled)]
+    player = next((character for character in characters if character.is_player_controlled), None)
+    failed = player is not None and player.id not in eligible
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        async with connection.execute("SELECT turn_id FROM turn_snapshots ORDER BY turn_id") as cursor:
+            retry_turn_ids = [row[0] for row in await cursor.fetchall()]
+    return {"failed": failed, "player_character_id": player.id if player else None,
+            "can_end": True, "switch_character_ids": eligible,
+            "retry_turn_ids": retry_turn_ids,
+            "failure_policy": (await get_runtime(story_id)).get("failure_policy", "continue")}
+
+
+async def continue_after_failure(story_id, choice, expected_revision, character_id=None):
+    await db.init_story_db(story_id)
+    options = await get_failure_options(story_id)
+    if choice not in {"end", "switch"}:
+        raise ValueError("Continuation must end or switch; retry uses create_retry_branch")
+    if choice == "switch" and character_id not in options["switch_character_ids"]:
+        raise ValueError("Continuation character is absent or incapable")
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                if (await cursor.fetchone())[0] != expected_revision:
+                    raise TurnConflictError("Continuation preview is stale")
+            if choice == "switch":
+                await connection.execute("UPDATE characters SET is_player_controlled = (id = ?)", (character_id,))
+            async with connection.execute("SELECT state_json FROM story_runtime WHERE id = 1") as cursor:
+                row = await cursor.fetchone()
+            runtime = json.loads(row[0]) if row else {}
+            runtime["ended"] = choice == "end"
+            await connection.execute("INSERT INTO story_runtime VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json", (json.dumps(runtime),))
+            await connection.commit()
+        except BaseException:
+            await connection.rollback()
+            raise
+    return await get_failure_options(story_id)
+
+
+async def create_retry_branch(story_id, turn_id, expected_revision, new_story_id=None):
+    import shutil
+    await db.init_story_db(story_id)
+    target_id = new_story_id or (story_id[:60] + "_retry_" + uuid4().hex[:12])
+    target = db.get_story_dir(target_id)
+    if target.exists() or target_id == story_id:
+        raise ValueError("Retry branch target already exists")
+    target.mkdir(parents=True, exist_ok=False)
+    try:
+        async with aiosqlite.connect(db.get_db_path(story_id)) as source:
+            async with source.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                if (await cursor.fetchone())[0] != expected_revision:
+                    raise TurnConflictError("Retry preview is stale")
+            async with source.execute("SELECT before_json FROM turn_snapshots WHERE turn_id = ?", (turn_id,)) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                raise ValueError("Retry requires a saved before-turn snapshot")
+            before = _decode_snapshot(row[0])
+            async with aiosqlite.connect(db.get_db_path(target_id)) as destination:
+                await source.backup(destination)
+            async with source.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                if (await cursor.fetchone())[0] != expected_revision:
+                    raise TurnConflictError("Source changed during retry branch creation")
+            await source.rollback()
+        async with aiosqlite.connect(db.get_db_path(target_id)) as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            for table in reversed(STATE_TABLES):
+                if table in before:
+                    await connection.execute(f"DELETE FROM {table}")
+            for table in STATE_TABLES:
+                for row in before.get(table, []):
+                    columns = list(row)
+                    await connection.execute(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", tuple(row.values()))
+            await connection.execute("DELETE FROM event_witnesses WHERE event_id IN (SELECT id FROM events WHERE turn_id >= ?)", (turn_id,))
+            await connection.execute("DELETE FROM events WHERE turn_id >= ?", (turn_id,))
+            await connection.execute("DELETE FROM player_view_artifacts WHERE turn_id >= ?", (turn_id,))
+            await connection.execute("DELETE FROM turn_receipts WHERE request_id IN (SELECT request_id FROM turn_snapshots WHERE turn_id >= ?)", (turn_id,))
+            await connection.execute("DELETE FROM resolver_candidates")
+            await connection.execute("DELETE FROM turn_snapshots WHERE turn_id >= ?", (turn_id,))
+            await connection.execute("DELETE FROM prose_edits WHERE turn_id >= ?", (turn_id,))
+            await connection.execute("DELETE FROM scene_turns WHERE id >= ?", (turn_id,))
+            await connection.execute("UPDATE story_meta SET id = ?", (target_id,))
+            async with connection.execute("SELECT state_json FROM story_runtime WHERE id = 1") as cursor:
+                runtime_row = await cursor.fetchone()
+            runtime = json.loads(runtime_row[0]) if runtime_row else {}
+            runtime.update(branch_source={"story_id": story_id, "retry_before_turn_id": turn_id, "source_revision": expected_revision}, ended=False)
+            await connection.execute("INSERT INTO story_runtime VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json", (json.dumps(runtime),))
+            await connection.commit()
+        await rebuild_exports(target_id)
+    except BaseException:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+    return {"story_id": target_id, "source_story_id": story_id, "retry_before_turn_id": turn_id}
+
+
+async def get_simulation_controls(story_id):
+    runtime = await get_runtime(story_id)
+    return {"plot_guidance": runtime.get("plot_guidance", "balanced"),
+            "decision_budget": runtime.get("decision_budget", 4), "revision": await get_revision(story_id)}
+
+
+async def set_simulation_controls(story_id, plot_guidance, expected_revision, decision_budget=4):
+    if plot_guidance not in {"adaptive", "balanced", "strong"} or isinstance(decision_budget, bool) or not isinstance(decision_budget, int) or not 1 <= decision_budget <= 8:
+        raise ValueError("Invalid simulation controls")
+    await db.init_story_db(story_id)
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                if (await cursor.fetchone())[0] != expected_revision:
+                    raise TurnConflictError("Simulation controls preview is stale")
+            async with connection.execute("SELECT state_json FROM story_runtime WHERE id = 1") as cursor:
+                row = await cursor.fetchone()
+            runtime = json.loads(row[0]) if row else {}
+            runtime.update(plot_guidance=plot_guidance, decision_budget=decision_budget)
+            await connection.execute("INSERT INTO story_runtime VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json", (json.dumps(runtime),))
+            await connection.commit()
+        except BaseException:
+            await connection.rollback()
+            raise
+    return await get_simulation_controls(story_id)

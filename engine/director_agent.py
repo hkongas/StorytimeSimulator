@@ -68,7 +68,9 @@ PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative pr
         )
 
         # 1. Tallennetaan StoryMeta tietokantaan
-        data = StoryInitResponse.model_validate(data).model_dump()
+        validated = StoryInitResponse.model_validate(data)
+        opening_fields = {character.id: character.model_fields_set for character in validated.initial_characters}
+        data = validated.model_dump()
         meta = StoryMeta(
             id=story_id,
             title=title,
@@ -118,7 +120,8 @@ PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative pr
                 public_bio=char_data.get("public_bio", ""),
                 tier=char_data.get("tier", "major"),
                 known_locations=char_data.get("known_locations", []),
-                location_id=opening_location_id
+                location_id=char_data.get("location_id") if "location_id" in opening_fields[char_id] else opening_location_id,
+                visibility_state=char_data.get("visibility_state", "visible")
             )
             await db.save_character(story_id, char)
             characters.append(char)
@@ -202,6 +205,9 @@ PREMISE / INSPIRATION: {user_idea or 'Create an original, immersive narrative pr
     ) -> str:
         """Suodattaa ja muodostaa aistisyötteen: mitä kyseinen hahmo näkee, kuulee ja tietää tässä hetkessä."""
         
+        from engine.simulation_contract import is_present
+        if not is_present(character, scene) or character.status in {"dead", "unconscious"}:
+            return "Ei uusia paikallisia havaintoja."
         system_prompt = prompt_loader.compose_system_prompt(
             prompt_name="director/perceptual_filter",
             tone_profile=tone_profile,
@@ -227,7 +233,7 @@ Deliver the sensory perception briefing directly for '{character.name}'.
         try:
             return await self.llm.chat_completion(messages=messages, temperature=0.7, max_tokens=400, role="director", story_id=story_id)
         except Exception:
-            return f"Olet tilassa {scene.location}. Havaitset ympärilläsi olevat hahmot ja tilanteen kehittyvän."
+            return "Ei uusia varmennettuja havaintoja."
 
     async def ensure_story_bible(self, story_id, scene, characters):
         return await db.get_story_bible(story_id)
@@ -238,11 +244,12 @@ Deliver the sensory perception briefing directly for '{character.name}'.
         system = prompt_loader.compose_system_prompt("director/plan_turn", tone_profile=meta.tone_profile,
                                                      custom_tone_override=meta.custom_tone_override)
         system += "\n" + prompt_loader.get_raw_prompt(f"director/mode_{mode}.txt")
+        system += "\nPLOT GUIDANCE: adaptive follows character goals; balanced sustains established conflicts but accepts alternatives; strong advances established external agents/deadlines regardless of cooperation. None may choose voluntary character actions or rewrite history. Quiet progress, refusal, abandonment and scene ending are valid. Select bounded context-dependent sequential/parallel decision_groups with backward dependencies, outcome-dependent intermediate resolution, and player stop boundaries."
         system += "\nPLANNER SCOPE: Mode governs control and pacing, not permission to act for characters. Only external world events occur here, before fresh decisions. Never execute user actions, private intentions, previous attempts, voluntary movement, speech, or mental decisions. The subsequent resolver handles fresh supplied intentions."
         no_progress = int(runtime.get("no_progress_beats", 0))
         world_state = await db.get_planning_world(story_id)
         if no_progress >= 2:
-            system += "\nFORCED ADVANCE: The last two beats made no objective change. Prefer an established reveal or practical change to available options that lets characters complete their own goals next. Use only supported external causes; never invent an arbitrary hazard, execute previous intentions, or choose for a character. The subsequent resolver prioritizes completing fresh supplied intentions and routines."
+            system += "\nREPETITION ASSESSMENT: The last two beats made no objective change. Prefer an established reveal or practical change to available options that lets characters complete their own goals next. Use only supported external causes; never invent an arbitrary hazard, execute previous intentions, or choose for a character. The subsequent resolver prioritizes completing fresh supplied intentions and routines."
         data = await self.llm.json_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps({
                 "mode": mode, "user_input": user_input, "world_intervention": director_guidance,
@@ -264,7 +271,11 @@ Deliver the sensory perception briefing directly for '{character.name}'.
                 "items": world_state["items"],
                 "relationships": world_state["relationships"],
                 "locations": world_state["locations"],
-                "no_progress_beats": no_progress
+                "no_progress_beats": no_progress,
+                "plot_guidance": runtime.get("plot_guidance", "balanced"),
+                "decision_budget": runtime.get("decision_budget", 4),
+                "commitments": runtime.get("commitments", {}),
+                "attempt_results": runtime.get("attempt_results", {})
             }, ensure_ascii=False)}], role="director", story_id=story_id,
             temperature=settings.DIRECTOR_PLAN_TEMPERATURE,
             max_tokens=settings.DIRECTOR_PLAN_MAX_TOKENS,
@@ -370,7 +381,7 @@ Deliver the sensory perception briefing directly for '{character.name}'.
         runtime = runtime or {}
         continuity = {key: runtime[key] for key in (
             "summary", "world_facts", "plot_threads", "decision_character_ids", "chapter_title",
-            "director_plan", "director_notes", "world_description", "no_progress_beats"
+            "director_plan", "director_notes", "world_description", "no_progress_beats", "commitments", "attempt_results", "plot_guidance", "elapsed_total_seconds"
         ) if key in runtime}
         for key, initial in (
             ("world_description", meta.world_lore if meta else ""),
@@ -455,7 +466,10 @@ Reader wish: {reader_wish or 'none'}
             temperature=settings.PROSE_TEMPERATURE, max_tokens=settings.PROSE_MAX_TOKENS,
             reasoning_effort=settings.PROSE_REASONING_EFFORT
         )
-        resolved = ResolverResponse.model_validate(data)
+        try:
+            resolved = ResolverResponse.model_validate(data)
+        except ValueError:
+            return data
         merged = merge_continuity(resolved, runtime)
         if len(merged["summary"]) > 4800:
             compressed = await self.llm.json_completion(
@@ -465,6 +479,15 @@ Reader wish: {reader_wish or 'none'}
                 json_schema=pydantic_to_json_schema(ContinuitySummary, "continuity_summary"))
             merged["summary"] = ContinuitySummary.model_validate(compressed).summary
         return resolved.model_dump() | merged
+
+    async def repair_turn_response(self, story_id, audit, runtime):
+        system = prompt_loader.compose_system_prompt("director/repair_response", include_tone=False)
+        candidate = await self.llm.json_completion(
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": json.dumps(audit, ensure_ascii=False, default=str)}],
+            role="director", story_id=story_id, max_tokens=settings.PROSE_MAX_TOKENS,
+            json_schema=pydantic_to_json_schema(ResolverResponse, "resolver_repair"))
+        return candidate
 
     async def check_narrative_watchdog(
         self,

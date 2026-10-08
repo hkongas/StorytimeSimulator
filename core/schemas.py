@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any, Type, Literal
 from uuid import uuid4
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+import math
 
 
 class CharacterCatchup(BaseModel):
@@ -78,6 +79,30 @@ class StateChange(BaseModel):
     field: str
     value: Any
 
+    @model_validator(mode="after")
+    def typed_value(self):
+        fields = {
+            "character": {"location_id", "physical_state", "mental_state", "status", "visibility_state"},
+            "item": {"holder_character_id", "location_id", "state"},
+            "relationship": {"attitude", "trust", "summary"},
+        }
+        # Unsupported planner fields remain discardable for compatibility; never executable.
+        if self.field not in fields.get(self.entity, set()):
+            return self
+        if self.field in {"location_id", "holder_character_id"}:
+            if self.value is not None and (not isinstance(self.value, str) or not self.value.strip()):
+                raise ValueError("value must be a nonempty identifier or null")
+        elif self.field == "trust":
+            if isinstance(self.value, bool) or not isinstance(self.value, (float, int)) or not math.isfinite(self.value) or not -1 <= self.value <= 1:
+                raise ValueError("value must be a finite number between -1 and 1")
+        elif not isinstance(self.value, str):
+            raise ValueError("value must be text")
+        if self.field == "status" and self.value not in {"active", "unconscious", "dead", "inactive", "archived"}:
+            raise ValueError("invalid character status")
+        if self.field == "visibility_state" and self.value not in {"visible", "hidden"}:
+            raise ValueError("invalid visibility state")
+        return self
+
 class StoryInitCharacter(BaseModel):
     id: str = Field(description="Unique short id, e.g. elias_korpela")
     name: str = Field(description="Full character name")
@@ -98,6 +123,8 @@ class StoryInitCharacter(BaseModel):
     is_player_controlled: bool = Field(default=False, description="Whether this is player's avatar")
     tier: str = Field(default="major", description="major, supporting, or minor")
     known_locations: List[str] = Field(default_factory=list, description="Locations known by this character")
+    location_id: Optional[str] = Field(default=None, description="Null means unknown/absent; omitted opening location defaults to opening scene")
+    visibility_state: Literal["visible", "hidden"] = "visible"
 
 
 class StoryInitItem(BaseModel):
@@ -198,7 +225,74 @@ class PendingReactionDecision(BaseModel):
     decision: str = Field(min_length=1, max_length=1200, description="The unresolved meaningful choice, not a possible reaction, routine, or already completed action")
 
 
+class LocationAddition(BaseModel):
+    event_id: str
+    id: str = Field(min_length=1, max_length=80, description="Response-local reference; engine assigns persistent ID")
+    name: str = Field(min_length=1)
+    description: str = ""
+
+
+class ItemAddition(StoryInitItem):
+    event_id: str
+
+
+class RelationshipAddition(RelationshipSeed):
+    event_id: str
+
+
+class EntityAdditions(BaseModel):
+    locations: List[LocationAddition] = Field(default_factory=list, max_length=20)
+    items: List[ItemAddition] = Field(default_factory=list, max_length=30)
+    relationships: List[RelationshipAddition] = Field(default_factory=list, max_length=30)
+
+
+class DecisionGroup(BaseModel):
+    id: str = Field(min_length=1)
+    mode: Literal["sequential", "parallel"] = "parallel"
+    character_ids: List[str] = Field(min_length=1, max_length=20)
+    depends_on: List[str] = Field(default_factory=list)
+    requires_resolved_outcome: bool = False
+    stop_for_player: bool = False
+
+
+class PublicStart(BaseModel):
+    text: str = Field(min_length=1, max_length=1200)
+    observer_ids: List[str] = Field(default_factory=list)
+    modality: Literal["saw", "heard", "faintly_heard", "felt"] = "heard"
+
+
+class ElapsedTime(BaseModel):
+    amount: float = Field(default=0, ge=0, allow_inf_nan=False)
+    unit: Literal["seconds", "minutes", "hours", "days"] = "seconds"
+    clock_beats: int = Field(default=1, ge=0, le=10000)
+    next_meaningful_moment: str = ""
+
+
+class AttemptResult(BaseModel):
+    intent_id: str
+    status: Literal["succeeded", "failed", "interrupted", "pending"]
+    event_id: Optional[str] = None
+    summary: str = ""
+
+
+class Commitment(BaseModel):
+    id: str
+    event_id: str
+    description: str = Field(min_length=1)
+    participants: List[str] = Field(default_factory=list)
+    conditions: str = ""
+    deadline: Optional[str] = None
+    status: Literal["pending", "fulfilled", "failed", "abandoned"] = "pending"
+
+
 class ResolverResponse(BaseModel):
+    entity_additions: EntityAdditions = Field(default_factory=EntityAdditions)
+    elapsed_time: ElapsedTime = Field(default_factory=ElapsedTime)
+    attempt_results: List[AttemptResult] = Field(default_factory=list)
+    commitments: List[Commitment] = Field(default_factory=list)
+    repetition_assessment: str = ""
+    consistency_issues: List[str] = Field(default_factory=list, description="Detected material prose/event/state contradictions; never accept these")
+    failure_policy: Literal["continue", "end", "switch_or_retry"] = "continue"
     chapter_title: str = Field(default="", max_length=160, description="Current chapter title; keep stable until chapter ends")
     director_plan: str = Field(default="", max_length=6000, description="Updated evolving plot arc: completed milestones, current conflict, plausible next developments; not a predetermined outcome")
     director_notes: str = Field(default="", max_length=4000, description="Updated pacing notes, unresolved decisions and consequences to resolve next")
@@ -238,6 +332,10 @@ class ProseTurnResponse(ResolverResponse):
         return value
 
 class PlannerResponse(BaseModel):
+    elapsed_time: Optional[ElapsedTime] = None
+    decision_groups: List[DecisionGroup] = Field(default_factory=list, max_length=8)
+    stop_condition: str = ""
+    plot_guidance_reason: str = ""
     events: List[StoryEvent] = Field(default_factory=list)
     decision_character_ids: List[str]
     direction: str = Field(min_length=1, max_length=4000)
@@ -249,6 +347,7 @@ class PlannerResponse(BaseModel):
 
 
 class CharacterDecisionResponse(BaseModel):
+    public_start: Optional[PublicStart] = Field(default=None, description="Only currently observable onset or complete utterance, never intended outcomes or private plans")
     goal: str = Field(description="The character's current goal")
     time_horizon: str = Field(description="How long this goal-level action should take")
     action: str = Field(description="One consequential goal-level action the character intends")

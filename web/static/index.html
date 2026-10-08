@@ -143,7 +143,7 @@
             <section id="turnProgress" class="turn-progress hidden" aria-label="Tarinan jatkon valmistuminen">
               <p id="submittedAction" class="submitted-action"></p>
               <div class="agent-status-indicator"><span class="pulsing-dot"></span><span id="livePhaseText" role="status">Valmistellaan vuoroa...</span></div>
-              <div class="turn-progress-meta"><span id="turnElapsed" role="timer" aria-live="off"></span></div>
+              <div class="turn-progress-meta"><span id="decisionGroupProgress" role="status"></span><span id="turnElapsed" role="timer" aria-live="off"></span></div>
             </section>
 
             <!-- Dynaamiset Valintanapit (Interactive Choices) -->
@@ -200,7 +200,36 @@
 
             <!-- Ohjaajatilan syöte -->
           </div>
+          <section id="playerContinuation" class="simulation-panel hidden" aria-labelledby="continuationHeading">
+            <h3 id="continuationHeading">Pelin jatkaminen</h3>
+            <p id="continuationStatus" role="status"></p>
+            <button id="endStoryBtn" class="btn btn-secondary btn-sm" onclick="continuePlayer('end')">Hyväksy lopetus</button>
+            <label for="continuationCharacter">Uusi näkökulmahahmo</label>
+            <select id="continuationCharacter"></select>
+            <button id="continueCharacterBtn" class="btn btn-secondary btn-sm" onclick="continuePlayer('choose_character')">Jatka hahmona</button>
+            <label for="continuationSnapshot">Aiempi tilannekuva</label>
+            <select id="continuationSnapshot"></select>
+            <button id="branchSnapshotBtn" class="btn btn-secondary btn-sm" onclick="continuePlayer('branch')">Luo uusi haara</button>
+            <p class="text-muted">Uusi hahmo käyttää vain omia tietojaan. Uusintahaara ei muuta alkuperäistä historiaa.</p>
+          </section>
           <div class="composer-options">
+            <label for="plotGuidance">Juoniohjaus</label>
+            <select id="plotGuidance" onchange="updatePlotGuidance()" aria-describedby="plotGuidanceHelp" disabled>
+              <option value="adaptive">Mukautuva</option>
+              <option value="balanced">Tasapainoinen</option>
+              <option value="strong">Vahvasti ohjattu</option>
+            </select>
+            <details>
+              <summary>Juoniohjauksen merkitys</summary>
+              <p id="plotGuidanceHelp">Mukautuva painottaa hahmojen tavoitteita. Tasapainoinen ylläpitää ristiriitoja mutta hyväksyy vaihtoehtoiset suunnat. Vahvasti ohjattu edistää myös ulkoisia tapahtumia. Mikään taso ei määrää hahmon vapaaehtoisia valintoja tai muuta historiaa.</p>
+            </details>
+            <details id="nullLocationMigration">
+              <summary>Vanhojen tuntemattomien sijaintien tarkistus</summary>
+              <p>Esikatsele ensin. Vain erikseen hyväksytyt sijainnit muuttuvat; epäselviä hahmoja ei siirretä automaattisesti.</p>
+              <button id="previewNullLocationsBtn" class="btn btn-secondary btn-sm" onclick="previewNullLocations()" disabled>Esikatsele</button>
+              <div id="nullLocationCandidates" class="simulation-panel"></div>
+              <button id="applyNullLocationsBtn" class="btn btn-primary btn-sm" onclick="applyNullLocations()" disabled>Hyväksy valitut sijainnit</button>
+            </details>
             <details id="privateIntentionGroup" class="hidden">
               <summary data-i18n="privateIntention">Yksityinen aikomus</summary>
               <textarea id="privateIntention" class="styled-textarea" rows="3" maxlength="4000" aria-label="Pelaajahahmon yksityinen aikomus" placeholder="Mitä hahmosi tavoittelee tai jättää sanomatta?"></textarea>
@@ -485,6 +514,14 @@
         <div class="form-group">
           <label>Julkinen tausta / Maine</label>
           <textarea id="editCharPublicBio" class="styled-textarea" rows="4" autocomplete="off"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="editCharVisibility">Näkyvyys</label>
+          <select id="editCharVisibility" class="styled-select">
+            <option value="visible">Näkyvä</option>
+            <option value="hidden">Piilossa</option>
+          </select>
+          <p class="text-muted">Piilossaolo ei muuta sijaintia eikä anna havaintoja automaattisesti.</p>
         </div>
         <div class="form-group">
           <label>Tila (Status)</label>
@@ -827,8 +864,9 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261006-catchup1"></script>
-  <script src="/static/turns.js?v=20261005-progress1"></script>
+  <script src="/static/app.js?v=20261007-simulation1"></script>
+  <script src="/static/turns.js?v=20261007-simulation1"></script>
+  <script src="/static/simulation.js?v=20261007-simulation1"></script>
   <script src="/static/bible.js?v=20261006-world1"></script>
 </body>
 </html>

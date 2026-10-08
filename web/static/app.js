@@ -212,6 +212,8 @@ async function loadStory(storyId) {
   if ((activeTurnEditor || editorSaving) && !await finishTurnEditor()) return;
   if (storyId !== currentStoryId) document.getElementById('autoContinue').checked = false;
   currentStoryId = storyId;
+  simulationControls = null;
+  nullLocationPreview = null;
   const loadSequence = ++storyLoadSequence;
 
   // Päivitetään aktiivinen luokka sivupalkkiin
@@ -229,6 +231,7 @@ async function loadStory(storyId) {
     setMode(localStorage.getItem(`storytime.mode.${storyId}`) || data.runtime?.mode || "novel");
     renderStoryView(data, preserveReadingPosition);
     renderInspector(data);
+    await loadSimulationControls(storyId);
     resumePendingTurn(storyId);
     loadStoryList(); // Päivitetään aktiivinen merkintä listaan
     updateTokenStats(storyId);
@@ -702,6 +705,7 @@ function filterAndRenderCharacters() {
   const sortBy = document.getElementById("charSortSelect")?.value || "activity";
 
   let filtered = characters.filter(c => {
+    if (currentMode === 'roleplay' && !canShowRoleplayCharacter(c)) return false;
     if (activeCharFilter === "active" && c.status !== "active") return false;
     if (activeCharFilter === "archived" && c.status !== "archived") return false;
     if (searchTerm && !c.name.toLowerCase().includes(searchTerm)) return false;
@@ -740,6 +744,7 @@ function renderCharacterAccordion(characters) {
           <span class="char-name">${escapeHtml(char.name)}</span>
           ${isPlayer ? '<span class="badge" style="background-color: var(--color-primary-subtle); color: var(--color-primary); font-weight: 600; font-size: 0.72rem; padding: 2px 6px; border-radius: 4px;">Pelaaja</span>' : ''}
           <span class="badge" style="color: var(--text-muted); font-size: 0.75rem;">${char.age}v</span>
+          ${currentMode !== 'roleplay' && char.visibility_state === 'hidden' ? '<span class="badge">Piilossa</span>' : ''}
         </div>
         <span class="accordion-arrow" style="font-size: 0.75rem; color: var(--text-muted);">▼</span>
       </div>
@@ -766,7 +771,7 @@ function renderCharacterAccordion(characters) {
 
         <div class="char-actions-row">
           <button class="btn btn-secondary btn-xs edit-character">Muokkaa</button>
-          ${!isPlayer && char.status === 'active' && currentStoryData.active_scene?.active_character_ids.includes(char.id) ? `<button class="btn btn-primary btn-xs play-character">Pelaa hahmona</button>` : ''}
+          ${!isPlayer && canSelectPlayerCharacter(char.id) ? `<button class="btn btn-primary btn-xs play-character">Pelaa hahmona</button>` : ''}
         </div>
 
         <div class="memory-stream-container private-detail mt-4">
@@ -844,6 +849,7 @@ function openEditCharModal(charId) {
   document.getElementById("editCharSecretMotive").value = char.secret_motive || "";
   document.getElementById("editCharPublicBio").value = char.public_bio || "";
   document.getElementById("editCharStatus").value = char.status || "active";
+  document.getElementById("editCharVisibility").value = char.visibility_state || "visible";
 
   document.getElementById("editCharModal").classList.remove("hidden");
 }
@@ -867,7 +873,8 @@ async function saveCharacterEdits() {
     personality: document.getElementById("editCharPersonality").value.trim(),
     secret_motive: document.getElementById("editCharSecretMotive").value.trim(),
     public_bio: document.getElementById("editCharPublicBio").value.trim(),
-    status: document.getElementById("editCharStatus").value
+    status: document.getElementById("editCharStatus").value,
+    visibility_state: document.getElementById("editCharVisibility").value
   };
 
   try {
@@ -884,6 +891,7 @@ async function saveCharacterEdits() {
     if (idx !== -1) {
       currentStoryData.characters[idx] = data.character;
     }
+    await loadSimulationControls(currentStoryId);
     filterAndRenderCharacters();
     updateActivePlayerBadge();
     closeEditCharModal();
@@ -920,7 +928,7 @@ async function createCharacterCatchup(charId, button) {
 }
 
 async function makeCharacterPlayer(charId) {
-  if (!currentStoryId) return;
+  if (!currentStoryId || !canSelectPlayerCharacter(charId) || simulationMutation || isGenerating) return;
 
   try {
     const res = await fetch(`/api/stories/${currentStoryId}/characters/${charId}/set_player`, {
@@ -971,6 +979,7 @@ function setMode(mode) {
   updateActivePlayerBadge();
   if (currentStoryData) filterAndRenderCharacters();
   if (currentStoryData && !isGenerating && !activeTurnEditor && !authoredTurn) renderStoryView(currentStoryData, true);
+  renderSimulationControls();
 }
 
 function showLiveAgentBar(show, initialText) {

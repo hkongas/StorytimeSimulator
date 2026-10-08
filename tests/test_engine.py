@@ -91,6 +91,10 @@ class MockLLMClient(LLMClient):
             if inputs.get("no_progress_beats", 0) >= 2:
                 response["clock_ticks"] = [{"clock_id": inputs["clocks"][0]["id"], "amount": 1}]
             return response
+        elif schema_name == "resolver_repair":
+            import json
+            audit = json.loads(messages[1]["content"])
+            return audit.get("repaired_candidate", audit["candidate"])
         elif schema_name == "authored_reconciliation":
             return {
                 "prose": "Model must not replace user prose", "recap_delta": "A bell rang.",
@@ -979,7 +983,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
     async def test_player_is_not_lost_among_many_characters(self):
         model, engine, story_id = await self.create_recorded_story()
         for index in range(6):
-            await db.import_character_to_story(story_id, {"id": f"extra_{index}", "name": f"Extra {index}", "age": 30})
+            await db.import_character_to_story(story_id, {"id": f"extra_{index}", "name": f"Extra {index}", "age": 30, "location_id": (await db.get_character(story_id, "char_eerik")).location_id})
         await db.set_player_character(story_id, "extra_5")
         await engine.advance_turn(story_id, mode="roleplay", user_input="EXACT_PLAYER_ACTION", private_intention="PRIVATE_PLAYER_PLAN")
         director_messages = str([messages for role, messages in model.calls if role == "director"])

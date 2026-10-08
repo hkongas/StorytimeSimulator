@@ -39,7 +39,10 @@ class ChronicleManager:
             custom_tone_override=custom_tone_override
         )
 
-        user_content = f"TAPAHTUMAT JA TOIMET:\n{turns_text}"
+        source_turn_ids = [turn.id for turn in recent_turns if turn.id is not None]
+        sources = await db.get_events_for_turns(story_id, source_turn_ids)
+        user_content = f"TAPAHTUMAT JA TOIMET:\n{turns_text}\nREALIZED EVENTS:\n" + json.dumps(sources, ensure_ascii=False)
+        system_prompt += "\nOriginal accepted prose is permanent. Summaries are derivative, never new world facts. Preserve old commitments and source meaning. Distinguish attempted actions from realized events."
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
@@ -51,25 +54,12 @@ class ChronicleManager:
                 chapter_index=chapter_index,
                 scene_index=scene_index,
                 summary=data.get("summary", "Kohtaus eteni."),
-                world_updates=data.get("world_updates", "")
+                world_updates=data.get("world_updates", ""),
+                source_turn_ids=source_turn_ids, source_event_ids=[event["id"] for event in sources]
             )
             await db.add_chronicle_entry(story_id, entry)
-
-            # Jos tuli maailmanpäivityksiä, liitetään ne story_metaan
-            world_updates = data.get("world_updates")
-            if world_updates:
-                meta = await db.get_story_meta(story_id)
-                if meta:
-                    meta.world_lore = f"{meta.world_lore}\n\n[Päivitys luku {chapter_index}]: {world_updates}".strip()
-                    await db.save_story_meta(story_id, meta)
 
             return entry
         except Exception:
-            entry = ChronicleEntry(
-                chapter_index=chapter_index,
-                scene_index=scene_index,
-                summary="Kohtauksen tapahtumat vietiin päätökseen.",
-                world_updates=""
-            )
-            await db.add_chronicle_entry(story_id, entry)
-            return entry
+            # Failed summarization never invents a replacement history.
+            return None

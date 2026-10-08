@@ -30,7 +30,7 @@ python -m uvicorn web.api:app --host 127.0.0.1 --port 8001
 | Mode | Character decisions | Narrator's role |
 | --- | --- | --- |
 | Novel | Character agents are called only at significant decision points identified by the previous turn. | Continues routine actions and transitions smoothly, then pauses before the next important independent decision. |
-| Simulation | Every active character present makes an independent decision. Up to five calls run concurrently; other characters are not dropped. | Resolves conflicting intentions and their consequences. Not every character needs to speak. |
+| Simulation | Capable characters present make independent decisions in narrator-selected sequential or parallel groups. | Resolves conflicting intentions and their consequences. Not every character needs to speak in the same moment. |
 | Roleplay | The player's action goes directly to the narrator. Other characters present make their own decisions. | Preserves the player's attempt, resolves its consequences, and pauses before the player's next significant choice. |
 
 The mode can be changed during a story. **Play as character** on a character card switches to roleplay. The character must be active in the current scene and able to act.
@@ -52,6 +52,20 @@ The narrator world panel also displays read-only items (holder or location and s
 Secret truths, clocks and offscreen agents are optional (zero or more). Initialization creates them only when warranted by the premise or user request. An empty bible stays empty. The narrator may add supported new entries through `bible_additions`; users can edit them in the bible editor. New truths start hidden and cannot overwrite existing facts. Reveals and clock expiry remain narrator-only until explicit per-character observations establish perception. Quiet stories need no mysteries, hazards or deadlines.
 
 Model contracts are phase-specific. Character responses have one action, speech and private thought, without duplicate compatibility fields. The planner cannot return scene movement or character-state updates. The resolver returns this beat's `recap_delta` and continuity fact/thread additions and removals, not a rewritten cumulative history. The engine merges these deltas and periodically compresses long history in a separate model call. State consequences reference a verified `event_id`; voluntary actions and authorized routines reference the exact current `intent_id`. Events use one `observations` list with each observer's text, and locations separate identity from display name with `location: {event_id, id, name}`.
+
+## Simulation contracts and orchestration
+
+The [simulation plan (Finnish)](SUUNNITELMA_SIMULAATIO.md) records the design and acceptance criteria. An unknown character location (`location_id: null`) means absence from the local scene. Hidden presence is separate: a hidden character must not be disclosed through another character's nearby-name list. Remote perception needs an explicitly established information channel; it does not follow from an unknown location.
+
+The narrator is not limited to a predefined location list. A new world entity and its consequences are validated together. Field-specific mutation contracts separate free-form descriptions from persisted identities, values, and event references. A bounded resolver repair preserves original character intentions rather than replaying the complete turn, and the corrected result must pass validation before commit.
+
+Narrator-selected decision groups can be sequential or parallel. Later characters receive only observable starts or resolved events, never private thoughts or a guaranteed outcome of an unfinished attempt. Necessary intermediate resolutions use a bounded decision budget. Explicit grouping does not start a duplicate legacy extra-reaction loop.
+
+Story guidance uses three presets: **Adaptive**, **Balanced**, and **Strong**. They control world pressure and plan persistence, not voluntary player choices. Attempt outcomes, commitments, and elapsed time remain in continuity. When the current player can no longer act, continuation may end the story, switch to an eligible character, or create a separate retry story from a snapshot without rewriting the original history.
+
+Legacy unknown locations require a preview, explicit mapping, and current revision. Do not automatically accept every suggestion: an old null location may have an ambiguous meaning.
+
+Conventional model calls remain the transport. No Realtime sessions are opened. The [Realtime follow-up design (Finnish)](SUUNNITELMA_REALTIME.md) documents dedicated model/endpoint restrictions, actor sessions, player interruption and token/cache billing. Keeping a connection open does not mean the growing conversation context is billed only once.
 
 ## Text Editing
 
@@ -143,7 +157,7 @@ python -m unittest discover -s tests -v
 Frontend timestamp and structure regressions can run separately with Node.js (only for testing, not application use):
 
 ```powershell
-node --test tests\test_frontend.cjs tests\test_bible_frontend.cjs
+node --test tests\test_frontend.cjs tests\test_bible_frontend.cjs tests\test_simulation_frontend.cjs
 ```
 
 Tests use temporary directories and fake models, not the user's stories or real model calls. They cover, among other things, information boundaries, mode differences, player actions, storage integrity, request replay, edit conflicts, memory retrieval, schema validation, background jobs, and path confinement. The test suite is limited and does not cover every usage scenario.
@@ -154,4 +168,4 @@ The UI has been tried during development at desktop and mobile widths, but compr
 
 Witness filtering prevents direct leakage of shared prose context. The narrator is still a language model and may produce an incorrect account of who witnessed an event or an inconsistent consequence. Schema validation does not prove that events are semantically correct. Decision points and paragraph pacing depend on the model and prompts.
 
-Branch storage and branch-aware turn/snapshot identifiers are present, but branch creation and UI are not implemented. Automatic reconciliation of prose edits, image generation, and a multi-process server job queue are also not implemented. Illustration prompts can still be generated. These features should build on the committed event and state model rather than bypass it.
+Automatic reconciliation of prose edits, image generation, Realtime sessions, and a multi-process server job queue are not implemented. A snapshot retry branch is not a general branch-merging or historical-reconciliation feature. Illustration prompts can still be generated. These features should build on the committed event and state model rather than bypass it.

@@ -66,11 +66,25 @@ async def _initialize_story_db(story_id: str):
                 version = (await cursor.fetchone())[0]
             if version != 9 or not required_tables <= existing_tables:
                 raise ValueError("Tarinan tietokanta ei vastaa nykyista kehitysversiota. Luo tarina uudelleen; migraatioita ei tueta.")
+            additions = {
+                "scenes": {"location_id": "TEXT"},
+                "characters": {"visibility_state": "TEXT NOT NULL DEFAULT 'visible'"},
+                "chronicle_entries": {"source_turn_ids": "TEXT NOT NULL DEFAULT '[]'", "source_event_ids": "TEXT NOT NULL DEFAULT '[]'", "summary_version": "INTEGER NOT NULL DEFAULT 1"},
+            }
+            for table, fields in additions.items():
+                async with db.execute(f"PRAGMA table_info({table})") as cursor:
+                    actual = {row[1] for row in await cursor.fetchall()}
+                for field, declaration in fields.items():
+                    if field not in actual:
+                        await db.execute(f"ALTER TABLE {table} ADD COLUMN {field} {declaration}")
+            await db.commit()
             for table, columns in required_columns.items():
                 async with db.execute(f"PRAGMA table_info({table})") as cursor:
                     actual = {row[1] for row in await cursor.fetchall()}
                 if actual != columns:
                     raise ValueError("Tarinan tietokannan rakenne on vanhentunut tai puutteellinen. Luo tarina uudelleen.")
+            await db.execute("CREATE TABLE IF NOT EXISTS resolver_candidates (request_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, audit_json TEXT NOT NULL, status TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+            await db.commit()
             return
         await db.executescript("BEGIN IMMEDIATE;\n" + schema_sql)
         for table in ("story_meta", "characters", "character_memories", "scenes", "scene_turns", "story_runtime", "chronicle_entries",
@@ -360,6 +374,7 @@ async def save_character(story_id: str, char: Character):
                 char.represents_group, char.group_size_hint, char.location_id
             )
         )
+        await db.execute("UPDATE characters SET visibility_state = ? WHERE id = ?", (char.visibility_state, char.id))
         await db.commit()
 
 async def get_character(story_id: str, char_id: str) -> Optional[Character]:
@@ -397,6 +412,7 @@ async def get_character(story_id: str, char_id: str) -> Optional[Character]:
                     represents_group=row["represents_group"] if "represents_group" in row_keys else None,
                     group_size_hint=row["group_size_hint"] if "group_size_hint" in row_keys else None,
                     location_id=row["location_id"] if "location_id" in row_keys else None,
+                    visibility_state=row["visibility_state"],
                     created_at=str(row["created_at"])
                 )
     return None
@@ -438,6 +454,7 @@ async def get_all_characters(story_id: str, include_archived: bool = True) -> Li
                     represents_group=row["represents_group"] if "represents_group" in row_keys else None,
                     group_size_hint=row["group_size_hint"] if "group_size_hint" in row_keys else None,
                     location_id=row["location_id"] if "location_id" in row_keys else None,
+                    visibility_state=row["visibility_state"],
                     created_at=str(row["created_at"])
                 ))
     return characters
@@ -478,8 +495,9 @@ async def update_character_details(story_id: str, char_id: str, updates: Dict[st
     if not char:
         return None
     for key, val in updates.items():
-        if hasattr(char, key) and val is not None:
+        if hasattr(char, key) and (val is not None or key == "location_id"):
             setattr(char, key, val)
+    char = Character.model_validate(char.model_dump())
     await save_character(story_id, char)
     return char
 
@@ -487,6 +505,12 @@ async def set_player_character(story_id: str, char_id: str) -> Optional[Characte
     """Asettaa tietyn hahmon ainoaksi pelattavaksi hahmoksi."""
     db_path = get_db_path(story_id)
     await init_story_db(story_id)
+    character = await get_character(story_id, char_id)
+    scene = await get_active_scene(story_id)
+    from engine.simulation_contract import is_present
+    if (not character or not scene or character.status != "active" or not is_present(character, scene)
+            or char_id not in scene.active_character_ids or character.visibility_state != "visible"):
+        raise ValueError("Pelaajahahmon on oltava havaittava ja toimintakykyinen nykyisessä kohtauksessa.")
     async with aiosqlite.connect(db_path) as db:
         await db.execute("UPDATE characters SET is_player_controlled = 0")
         await db.execute("UPDATE characters SET is_player_controlled = 1 WHERE id = ?", (char_id,))
@@ -653,7 +677,12 @@ async def import_character_to_story(
                 await add_character_memory(story_id, mem_item)
 
     active_scene = await get_active_scene(story_id)
-    if active_scene:
+    if active_scene and include_state and raw_char.get("location_id"):
+        if not await location_exists(story_id, raw_char["location_id"]):
+            raise ValueError("Tuodun hahmon sijainti on tuntematon.")
+        char.location_id = raw_char["location_id"]
+        await save_character(story_id, char)
+    if active_scene and char.location_id == location_identifier(active_scene.location):
         if final_id not in active_scene.active_character_ids:
             active_scene.active_character_ids.append(final_id)
             if active_scene.id:
@@ -669,10 +698,10 @@ async def create_scene(story_id: str, scene: Scene) -> int:
     async with aiosqlite.connect(db_path) as db:
         cursor = await db.execute(
             """
-            INSERT INTO scenes (chapter_number, location, scene_goal, active_character_ids, is_active)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO scenes (chapter_number, location, location_id, scene_goal, active_character_ids, is_active)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (scene.chapter_number, scene.location, scene.scene_goal, json.dumps(scene.active_character_ids), 1 if scene.is_active else 0)
+            (scene.chapter_number, scene.location, scene.location_id or location_identifier(scene.location), scene.scene_goal, json.dumps(scene.active_character_ids), 1 if scene.is_active else 0)
         )
         await db.commit()
         return cursor.lastrowid
@@ -691,6 +720,7 @@ async def get_active_scene(story_id: str) -> Optional[Scene]:
                     id=row["id"],
                     chapter_number=row["chapter_number"],
                     location=row["location"],
+                    location_id=row["location_id"] or location_identifier(row["location"]),
                     scene_goal=row["scene_goal"],
                     active_character_ids=json.loads(row["active_character_ids"] or "[]"),
                     is_active=bool(row["is_active"]),
@@ -783,10 +813,11 @@ async def add_chronicle_entry(story_id: str, entry: ChronicleEntry):
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """
-            INSERT INTO chronicle_entries (chapter_index, scene_index, summary, world_updates, repetition_flag)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO chronicle_entries (chapter_index, scene_index, summary, world_updates, repetition_flag, source_turn_ids, source_event_ids, summary_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (entry.chapter_index, entry.scene_index, entry.summary, entry.world_updates, 1 if entry.repetition_flag else 0)
+            (entry.chapter_index, entry.scene_index, entry.summary, entry.world_updates, 1 if entry.repetition_flag else 0,
+             json.dumps(entry.source_turn_ids), json.dumps(entry.source_event_ids), entry.summary_version)
         )
         await db.commit()
 
@@ -805,6 +836,9 @@ async def get_chronicle(story_id: str) -> List[ChronicleEntry]:
                     chapter_index=row["chapter_index"],
                     scene_index=row["scene_index"],
                     summary=row["summary"],
+                    source_turn_ids=json.loads(row["source_turn_ids"]),
+                    source_event_ids=json.loads(row["source_event_ids"]),
+                    summary_version=row["summary_version"],
                     world_updates=row["world_updates"],
                     repetition_flag=bool(row["repetition_flag"]) if "repetition_flag" in row_keys else False,
                     created_at=str(row["created_at"])
@@ -941,3 +975,63 @@ async def get_story_api_stats(story_id: str) -> Dict[str, Any]:
             stats["last_model"] = last_row["model"] if last_row else ""
 
     return stats
+
+
+async def get_character_event_accounts(story_id: str, character_id: str):
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        connection.row_factory = aiosqlite.Row
+        async with connection.execute("SELECT e.id, w.detail FROM events e JOIN event_witnesses w ON e.id = w.event_id WHERE w.character_id = ? ORDER BY e.turn_id DESC LIMIT 100", (character_id,)) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_events_for_turns(story_id: str, turn_ids: List[int]):
+    if not turn_ids:
+        return []
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        connection.row_factory = aiosqlite.Row
+        async with connection.execute("SELECT id, turn_id, description, derived_from, actor_id FROM events WHERE turn_id IN (" + ",".join("?" for _ in turn_ids) + ") ORDER BY turn_id, rowid", turn_ids) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def preview_null_location_migration(story_id: str):
+    # Read-only preview; never infer a location from roster membership alone.
+    if not get_db_path(story_id).exists():
+        raise ValueError("Tarinaa ei löydy.")
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        connection.row_factory = aiosqlite.Row
+        async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+            revision = (await cursor.fetchone())[0]
+        async with connection.execute("SELECT id, name, status FROM characters WHERE location_id IS NULL ORDER BY id") as cursor:
+            characters = [dict(row) for row in await cursor.fetchall()]
+        async with connection.execute("SELECT id, location, active_character_ids FROM scenes WHERE is_active = 1 ORDER BY id DESC LIMIT 1") as cursor:
+            scene = await cursor.fetchone()
+    active = set(json.loads(scene["active_character_ids"] or "[]")) if scene else set()
+    for character in characters:
+        character.update(requires_approval=True, suggested_location_id=location_identifier(scene["location"]) if scene and character["id"] in active else None,
+                         reason="Legacy null is ambiguous; roster membership is not evidence of presence")
+    return {"revision": revision, "characters": characters, "semantic_change": "null means unknown and absent"}
+
+
+async def apply_null_location_migration(story_id: str, locations: Dict[str, Optional[str]], expected_revision: int):
+    from database.turn_store import TurnConflictError
+    async with aiosqlite.connect(get_db_path(story_id)) as connection:
+        await connection.execute("BEGIN IMMEDIATE")
+        try:
+            async with connection.execute("SELECT revision FROM story_revision WHERE id = 1") as cursor:
+                if (await cursor.fetchone())[0] != expected_revision:
+                    raise TurnConflictError("Migration preview is stale")
+            for identifier, location in locations.items():
+                async with connection.execute("SELECT location_id FROM characters WHERE id = ?", (identifier,)) as cursor:
+                    character = await cursor.fetchone()
+                if not character or character[0] is not None:
+                    raise ValueError("Migration only accepts existing null-location characters")
+                if location is not None:
+                    async with connection.execute("SELECT 1 FROM locations WHERE id = ?", (location,)) as cursor:
+                        if not await cursor.fetchone():
+                            raise ValueError("Migration location must already be registered")
+                    await connection.execute("UPDATE characters SET location_id = ? WHERE id = ?", (location, identifier))
+            await connection.commit()
+        except BaseException:
+            await connection.rollback()
+            raise
+    return await preview_null_location_migration(story_id)

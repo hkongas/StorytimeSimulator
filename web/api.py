@@ -72,7 +72,9 @@ async def run_turn_job(story_id: str, req: AdvanceStoryRequest, job: dict):
     try:
         async for event in engine.advance_turn_streaming(
             story_id, req.user_input, req.mode, req.custom_guidance,
-            req.private_intention, req.request_id, req.extra_reaction_cycle
+            req.private_intention, req.request_id, req.extra_reaction_cycle,
+            plot_guidance=req.plot_guidance, decision_budget=req.decision_budget,
+            expected_revision=req.expected_revision
         ):
             if event["type"] == "phase":
                 job["message"] = event["message"]
@@ -254,6 +256,170 @@ async def get_story_details(story_id: str):
         "can_undo": can_undo,
         "full_text": full_text
     }
+
+class SimulationRevisionRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+
+
+class PlotGuidanceRequest(SimulationRevisionRequest):
+    preset: Literal["adaptive", "balanced", "strong"]
+
+
+class NullLocationRequest(SimulationRevisionRequest):
+    selections: Dict[str, str] = Field(min_length=1, max_length=200)
+
+
+class PlayerContinuationRequest(SimulationRevisionRequest):
+    action: Literal["end", "choose_character", "branch"]
+    character_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    snapshot_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
+class SimulationCharacterOption(BaseModel):
+    id: str
+    name: str
+
+
+class SimulationSnapshotOption(BaseModel):
+    id: str
+    label: str
+
+
+class SimulationMutationResponse(BaseModel):
+    story_id: str
+    revision: int
+
+
+class NullLocationCandidate(BaseModel):
+    character_id: str
+    name: str
+    suggested_location_id: Optional[str] = None
+    ambiguous: bool
+    locations: List[SimulationCharacterOption]
+
+
+class NullLocationPreviewResponse(BaseModel):
+    revision: int
+    candidates: List[NullLocationCandidate]
+
+
+class SimulationControlsResponse(BaseModel):
+    revision: int
+    plot_guidance: Literal["adaptive", "balanced", "strong"]
+    player_failed: bool
+    ended: bool
+    eligible_characters: List[SimulationCharacterOption]
+    snapshots: List[SimulationSnapshotOption]
+    known_character_ids: List[str] = Field(default_factory=list)
+
+
+async def require_simulation_story(story_id: str):
+    if not await db.get_story_meta(story_id):
+        raise HTTPException(404, "Tarinaa ei löydy.")
+
+
+async def simulation_controls(story_id: str):
+    revision = await turn_store.get_revision(story_id)
+    runtime = await turn_store.get_runtime(story_id)
+    options = await turn_store.get_failure_options(story_id)
+    characters = await db.get_all_characters(story_id)
+    scene = await db.get_active_scene(story_id)
+    eligible_ids = set(options["switch_character_ids"])
+    eligible = [{"id": character.id, "name": character.name} for character in characters
+                if scene and character.id in eligible_ids and character.status == "active"
+                and character.location_id is not None and character.location_id == scene.location_id
+                and character.id in scene.active_character_ids and character.visibility_state == "visible"]
+    if revision != await turn_store.get_revision(story_id):
+        raise turn_store.TurnConflictError("Tarina muuttui esikatselun aikana.")
+    return {"revision": revision, "plot_guidance": runtime.get("plot_guidance", "balanced"),
+            "player_failed": options["failed"], "ended": bool(runtime.get("ended")),
+            "eligible_characters": eligible,
+            "snapshots": [{"id": str(identifier), "label": f"Ennen vuoroa {identifier}"}
+                          for identifier in options["retry_turn_ids"]],
+            "known_character_ids": options.get("known_character_ids", [])}
+
+
+async def simulation_set_plot(story_id: str, preset: str, expected_revision: int):
+    controls = await turn_store.get_simulation_controls(story_id)
+    saved = await turn_store.set_simulation_controls(
+        story_id, preset, expected_revision, decision_budget=controls["decision_budget"])
+    return {"story_id": story_id, "revision": saved["revision"]}
+
+
+async def simulation_preview_locations(story_id: str):
+    preview = await db.preview_null_location_migration(story_id)
+    locations = (await db.get_planning_world(story_id))["locations"]
+    if preview["revision"] != await turn_store.get_revision(story_id):
+        raise turn_store.TurnConflictError("Tarina muuttui sijaintien esikatselun aikana.")
+    return {"revision": preview["revision"], "candidates": [
+        {"character_id": character["id"], "name": character["name"],
+         "suggested_location_id": character["suggested_location_id"],
+         "ambiguous": character["requires_approval"], "locations": locations}
+        for character in preview["characters"]]}
+
+
+async def simulation_apply_locations(story_id: str, selections: Dict[str, str], expected_revision: int):
+    await db.apply_null_location_migration(story_id, selections, expected_revision)
+    return {"story_id": story_id, "revision": await turn_store.get_revision(story_id)}
+
+
+async def simulation_continue(story_id: str, action: str, expected_revision: int,
+                              character_id: Optional[str] = None, snapshot_id: Optional[str] = None):
+    if action == "branch":
+        result = await turn_store.create_retry_branch(story_id, int(snapshot_id), expected_revision)
+        target_id = result["story_id"]
+    else:
+        await turn_store.continue_after_failure(story_id, "switch" if action == "choose_character" else "end",
+                                               expected_revision, character_id)
+        target_id = story_id
+    return {"story_id": target_id, "revision": await turn_store.get_revision(target_id)}
+
+
+@app.get("/api/stories/{story_id}/simulation/controls", response_model=SimulationControlsResponse)
+async def get_simulation_controls(story_id: str):
+    await require_simulation_story(story_id)
+    return await simulation_controls(story_id)
+
+
+@app.put("/api/stories/{story_id}/simulation/plot-guidance", response_model=SimulationMutationResponse)
+@app.post("/api/stories/{story_id}/simulation/plot-guidance", response_model=SimulationMutationResponse)
+async def set_plot_guidance(story_id: str, req: PlotGuidanceRequest):
+    await require_simulation_story(story_id)
+    return await simulation_set_plot(story_id, req.preset, req.expected_revision)
+
+
+@app.get("/api/stories/{story_id}/simulation/null-locations", response_model=NullLocationPreviewResponse)
+async def preview_null_locations(story_id: str):
+    await require_simulation_story(story_id)
+    return await simulation_preview_locations(story_id)
+
+
+@app.post("/api/stories/{story_id}/simulation/null-locations", response_model=SimulationMutationResponse)
+async def apply_null_locations(story_id: str, req: NullLocationRequest):
+    await require_simulation_story(story_id)
+    return await simulation_apply_locations(story_id, req.selections, req.expected_revision)
+
+
+@app.post("/api/stories/{story_id}/simulation/continuation", response_model=SimulationMutationResponse)
+async def continue_failed_player(story_id: str, req: PlayerContinuationRequest):
+    await require_simulation_story(story_id)
+    if (req.action == "choose_character") != (req.character_id is not None):
+        raise HTTPException(422, "Hahmo valitaan vain hahmonvaihdossa.")
+    if (req.action == "branch") != (req.snapshot_id is not None):
+        raise HTTPException(422, "Tilannekuva valitaan vain uudessa haarassa.")
+    controls = await simulation_controls(story_id)
+    if req.expected_revision != controls["revision"]:
+        raise turn_store.TurnConflictError("Jatkon esikatselu on vanhentunut.")
+    if req.action != "branch" and (not controls["player_failed"] or controls["ended"]):
+        raise HTTPException(409, "Pelaajahahmon jatkovalinta ei ole käytettävissä.")
+    if req.action == "choose_character" and req.character_id not in {char["id"] for char in controls["eligible_characters"]}:
+        raise HTTPException(400, "Hahmo ei ole kelvollinen pelaajahahmo.")
+    if req.action == "branch" and req.snapshot_id not in {snapshot["id"] for snapshot in controls["snapshots"]}:
+        raise HTTPException(400, "Tilannekuvaa ei ole käytettävissä.")
+    return await simulation_continue(
+        story_id, req.action, req.expected_revision,
+        character_id=req.character_id, snapshot_id=req.snapshot_id)
+
 
 class BibleTruth(BaseModel):
     id: str = Field(min_length=1, max_length=80)
@@ -450,6 +616,7 @@ async def update_story_meta(story_id: str, req: StoryMetaUpdate):
     return {"status": "success", "meta": meta}
 
 class CharacterUpdateRequest(BaseModel):
+    visibility_state: Optional[Literal["hidden", "visible"]] = None
     name: Optional[str] = None
     age: Optional[int] = None
     gender: Optional[str] = None
@@ -475,6 +642,10 @@ async def update_character(story_id: str, char_id: str, req: CharacterUpdateRequ
 @app.post("/api/stories/{story_id}/characters/{char_id}/set_player")
 async def set_player_character_endpoint(story_id: str, char_id: str):
     """Asettaa valitun hahmon pelaajan ohjaamaksi."""
+    await require_simulation_story(story_id)
+    controls = await simulation_controls(story_id)
+    if controls["ended"] or char_id not in {char["id"] for char in controls["eligible_characters"]}:
+        raise HTTPException(400, "Hahmo ei ole kelvollinen pelaajahahmo.")
     char = await db.set_player_character(story_id, char_id)
     if not char:
         raise HTTPException(status_code=404, detail="Hahmoa ei löydy.")
@@ -574,6 +745,10 @@ async def import_character(story_id: str, req: CharacterImportRequest):
         )
         all_chars = await db.get_all_characters(story_id)
         return {"status": "success", "character": char, "all_characters": all_chars}
+    except turn_store.TurnConflictError:
+        raise
+    except ValueError as error:
+        raise HTTPException(400, str(error))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Hahmon tuonti epäonnistui: {str(e)}")
 
@@ -593,10 +768,17 @@ async def advance_story(story_id: str, req: AdvanceStoryRequest):
             director_guidance=req.custom_guidance or (req.user_input if req.mode == "director" else None),
             private_intention=req.private_intention,
             request_id=req.request_id,
-            extra_reaction_cycle=req.extra_reaction_cycle
+            extra_reaction_cycle=req.extra_reaction_cycle,
+            plot_guidance=req.plot_guidance,
+            decision_budget=req.decision_budget,
+            expected_revision=req.expected_revision
         )
         logger.info(f"Tarinaa '{story_id}' edistetty: vuoro {turn_response.turn_index}")
         return {"status": "success", "data": turn_response}
+    except turn_store.TurnConflictError:
+        raise
+    except ValueError as error:
+        raise HTTPException(400, str(error))
     except Exception as e:
         logger.exception(f"Virhe tarinan '{story_id}' vuoron edistämisessä: {e}")
         raise HTTPException(status_code=500, detail=str(e))

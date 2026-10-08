@@ -255,11 +255,14 @@ function turnNotice(message, retry = false) {
 
 function syncTurnControls() {
   isGenerating = Boolean(pendingTurns[currentStoryId]);
-  const blocked = isGenerating || Boolean(activeTurnEditor) || editorSaving || Boolean(authoredTurn);
+  const controls = typeof simulationControls === 'undefined' ? null : simulationControls;
+  const blocked = isGenerating || Boolean(activeTurnEditor) || editorSaving || Boolean(authoredTurn) ||
+    (typeof simulationMutation !== 'undefined' && simulationMutation);
+  const continuationBlocked = controls?.ended || (currentMode === 'roleplay' && typeof simulationControls !== 'undefined' && (!controls || controls.player_failed));
   document.querySelectorAll('.segment-btn').forEach(button => button.disabled = blocked);
   document.getElementById('readingView').disabled = blocked || currentMode === 'roleplay';
   document.getElementById('showRecaps').disabled = blocked;
-  for (const id of ['advanceBtn', 'playerActBtn']) document.getElementById(id).disabled = blocked;
+  for (const id of ['advanceBtn', 'playerActBtn']) document.getElementById(id).disabled = blocked || continuationBlocked;
   for (const id of ['readerInput', 'playerInput', 'privateIntention', 'worldIntervention', 'extraReactionCycle']) {
     document.getElementById(id).disabled = blocked;
   }
@@ -271,19 +274,25 @@ function syncTurnControls() {
   document.getElementById('advanceBtn').classList.toggle('hidden', isGenerating && currentMode !== 'roleplay');
   document.getElementById('playerActBtn').classList.toggle('hidden', isGenerating && currentMode === 'roleplay');
   if (!isGenerating) showLiveAgentBar(false);
+  if (typeof renderSimulationControls === 'function') renderSimulationControls();
   document.querySelector('.story-writing-area')?.classList.toggle('hidden', isGenerating);
 }
 
 async function advanceStory() {
   const storyId = currentStoryId;
-  if (!storyId || pendingTurns[storyId] || activeTurnEditor || editorSaving || authoredTurn) return;
+  const controls = typeof simulationControls === 'undefined' ? null : simulationControls;
+  if (!storyId || pendingTurns[storyId] || activeTurnEditor || editorSaving || authoredTurn ||
+      (typeof simulationMutation !== 'undefined' && simulationMutation) || controls?.ended ||
+      (currentMode === 'roleplay' && typeof simulationControls !== 'undefined' && (!controls || controls.player_failed))) return;
   const inputId = currentMode === 'roleplay' ? 'playerInput' : 'readerInput';
   const record = {storyId, payload: {
     request_id: crypto.randomUUID(), mode: currentMode,
     user_input: document.getElementById(inputId).value.trim() || null,
     private_intention: currentMode === 'roleplay' ? document.getElementById('privateIntention').value.trim() || null : null,
     custom_guidance: document.getElementById('worldIntervention').value.trim() || null,
-    extra_reaction_cycle: document.getElementById('extraReactionCycle').checked
+    extra_reaction_cycle: document.getElementById('extraReactionCycle').checked,
+    plot_guidance: controls?.plot_guidance || 'balanced',
+    expected_revision: controls?.revision ?? (typeof currentStoryData === 'undefined' ? undefined : currentStoryData?.revision)
   }};
   pendingTurns[storyId] = record;
   record.startedAt = Date.now();
@@ -335,6 +344,7 @@ async function monitorTurn(record) {
         const progress = JSON.parse(event.data);
         if (currentStoryId === record.storyId) {
           showLiveAgentBar(true, progress.message);
+          renderDecisionProgress(progress);
         }
       });
       source.addEventListener('result', event => { source.close(); resolve(JSON.parse(event.data)); });
@@ -379,6 +389,7 @@ async function monitorTurn(record) {
 }
 
 function showTurnProgress(record) {
+  document.getElementById('decisionGroupProgress').textContent = '';
   renderChoices([]);
   showLiveAgentBar(true, 'Valmistellaan vuoroa...');
   const submittedAction = [record.payload.user_input,

@@ -281,7 +281,7 @@ class TurnContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_event_link_rejects_entire_turn(self):
         def transform(schema, result):
-            if schema == "prose_turn":
+            if schema in {"prose_turn", "resolver_repair"}:
                 result["character_state_updates"] = [{"event_id": "missing", "character_id": "char_eerik", "physical_state": "Injured"}]
         self.customize(transform)
         with self.assertRaisesRegex(ValueError, "tapahtumaviite"):

@@ -36,6 +36,7 @@ class Character(BaseModel):
     represents_group: Optional[str] = None
     group_size_hint: Optional[int] = None
     location_id: Optional[str] = None
+    visibility_state: Literal["visible", "hidden"] = "visible"
     created_at: Optional[str] = None
 
 class CharacterMemory(BaseModel):
@@ -65,6 +66,9 @@ class StoryMeta(BaseModel):
     updated_at: Optional[str] = None
 
 class ChronicleEntry(BaseModel):
+    source_turn_ids: List[int] = Field(default_factory=list)
+    source_event_ids: List[str] = Field(default_factory=list)
+    summary_version: int = Field(default=1, ge=1)
     id: Optional[int] = None
     chapter_index: int = 1
     scene_index: int = 1
@@ -74,6 +78,7 @@ class ChronicleEntry(BaseModel):
     created_at: Optional[str] = None
 
 class Scene(BaseModel):
+    location_id: Optional[str] = None
     id: Optional[int] = None
     chapter_number: int = 1
     location: str
@@ -117,6 +122,9 @@ class StoryInitRequest(BaseModel):
     temperature: Optional[float] = 0.85
 
 class AdvanceStoryRequest(BaseModel):
+    plot_guidance: Optional[Literal["adaptive", "balanced", "strong"]] = None
+    decision_budget: Optional[int] = Field(default=None, ge=1, le=8, strict=True)
+    expected_revision: Optional[int] = Field(default=None, ge=0)
     user_input: Optional[str] = None  # Toiminta pelaajana tai ohje lukijana/ohjaajana
     mode: StoryMode = "novel"
     private_intention: Optional[str] = Field(default=None, max_length=4000)
@@ -127,6 +135,12 @@ class AdvanceStoryRequest(BaseModel):
     temperature: Optional[float] = 0.85
 
 class TurnResponse(BaseModel):
+    elapsed_time: Dict[str, Any] = Field(default_factory=dict)
+    attempt_results: List[Dict[str, Any]] = Field(default_factory=list)
+    commitments: List[Dict[str, Any]] = Field(default_factory=list)
+    decision_groups_used: int = 0
+    scene_stop: bool = False
+    failure_options: Dict[str, Any] = Field(default_factory=dict)
     turn_index: int
     mode: str = "novel"
     request_id: Optional[str] = None

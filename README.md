@@ -30,7 +30,7 @@ python -m uvicorn web.api:app --host 127.0.0.1 --port 8001
 | Tila | Hahmojen päätökset | Kertojan tehtävä |
 | --- | --- | --- |
 | Romaani | Hahmokutsu vain edellisen vuoron osoittamissa merkittävissä päätöskohdissa. | Jatkaa rutiinitoimintaa ja siirtymiä sujuvasti. Pysähtyy ennen seuraavaa tärkeää itsenäistä ratkaisua. |
-| Simulaatio | Kaikki läsnä olevat toimintakykyiset hahmot tekevät oman ratkaisunsa. Korkeintaan viisi kutsua on samanaikaisesti käynnissä; muita hahmoja ei pudoteta pois. | Ratkaisee aikeiden ristiriidat ja tapahtumien seuraukset. Kaikkien ei tarvitse saada puheenvuoroa. |
+| Simulaatio | Läsnä olevat toimintakykyiset hahmot tekevät itsenäisiä ratkaisuja kertojan valitsemissa peräkkäisissä tai rinnakkaisissa päätösryhmissä. | Ratkaisee aikeiden ristiriidat ja tapahtumien seuraukset. Kaikkien ei tarvitse saada puheenvuoroa samassa hetkessä. |
 | Roolipeli | Pelaajan toiminta menee suoraan kertojalle. Muut läsnä olevat hahmot tekevät omat ratkaisunsa. | Säilyttää pelaajan yrityksen, ratkaisee seuraukset ja pysähtyy ennen pelaajan seuraavaa merkittävää valintaa. |
 
 Tilaa voi vaihtaa kesken tarinan. Hahmokortin **Pelaa hahmona** siirtää roolipeliin. Hahmon on oltava aktiivisessa kohtauksessa ja toimintakykyinen.
@@ -52,6 +52,20 @@ Kertojan maailmanäkymä näyttää myös esineet (haltija tai sijainti ja tila)
 Salaiset totuudet, kellot ja sivussa toimivat agentit ovat valinnaisia (0–n). Tarinan alustus voi luoda niitä asetelman tai käyttäjän toiveen perusteella; tyhjää tarinaraamattua ei täytetä automaattisesti. Kertoja voi lisätä perusteltuja uusia rakenteita vuoron `bible_additions`-kentässä, ja käyttäjä voi muokata niitä tarinaraamatun editorissa. Uusi salaisuus alkaa piilossa eikä korvaa olemassa olevaa totuutta. Paljastukset etenevät `hidden` → `hinted` → `revealed`; hahmo saa vain oman havaintonsa, ei salaisen faktan koko tekstiä. Löytöreitin muutos viittaa sitä aiheuttaneeseen tapahtumaan. Olemassa olevat kellot etenevät kerran vuorossa, ja niiden päättymisen seuraus laukeaa kerran. Rauhallisen tarinan ei tarvitse sisältää salaisuuksia, uhkia tai aikapainetta.
 
 Mallivastaukset ovat vaihekohtaisia. Hahmo palauttaa yhden toimintayrityksen, puheen ja yksityisen ajatuksen ilman rinnakkaisia yhteensopivuuskenttiä. Suunnittelija ei palauta kohtauksen siirtoa tai hahmopäivityksiä. Ratkaisija palauttaa vuoron `recap_delta`-tekstin ja jatkuvuuden faktojen sekä juonilankojen lisäykset/poistot, ei koko historiaa uudelleen. Ohjelma yhdistää muutokset aiempaan tilaan ja tiivistää pitkän tapahtumahistorian erillisellä mallikutsulla. Tilamuutosten `event_id`-viitteet tarkistetaan ennen tallennusta; vapaaehtoinen teko tai valtuutettu rutiini viittaa tämän vuoron täsmälliseen `intent_id`-aikeeseen. Paikan tunniste ja nimi kulkevat erikseen `location: {event_id, id, name}` -rakenteessa.
+
+## Simulaation tilasopimus ja orkestrointi
+
+Uudistuksen määrittely ja hyväksymiskriteerit ovat [simulaatiosuunnitelmassa](SUUNNITELMA_SIMULAATIO.md). Hahmon tuntematon sijainti (`location_id: null`) tarkoittaa poissaoloa paikallisesta kohtauksesta. Piilossaolo on erillinen ominaisuus: paikalla oleva piiloutunut hahmo ei saa paljastua muiden hahmojen nimilistasta. Etähavainnot edellyttävät erikseen määriteltyä tiedonkulun lähdettä; ne eivät seuraa automaattisesti tuntemattomasta sijainnista.
+
+Kertojan luomisvapautta ei rajata valmiiseen paikkaluetteloon. Uusi maailmanasia ja siihen viittaava seuraus validoidaan yhtenä vastauskokonaisuutena. Kenttäkohtainen tilasopimus erottaa vapaamuotoisen kuvauksen tietokantaan tallennettavista tunnisteista, arvoista ja tapahtumaviitteistä. Virheellisen ratkaisuvastauksen korjaus säilyttää alkuperäiset hahmoaikeet eikä aloita koko kierrosta alusta; korjauskin validoidaan ennen tallennusta.
+
+Kertojan päätösryhmät voivat olla peräkkäisiä tai rinnakkaisia. Seuraavalle hahmolle välitetään vain havaittava toiminnan aloitus tai jo ratkaistu tapahtuma, ei muiden yksityisajatuksia eikä avoimen yrityksen varmaa lopputulosta. Tarvittavat väliratkaisut mahtuvat rajattuun päätösbudjettiin. Ryhmämalli ei käynnistä päällekkäistä vanhaa lisäreaktiosilmukkaa.
+
+Juoniohjaus valitaan tarinalle kolmesta tasosta: **Mukautuva**, **Tasapainoinen** tai **Vahvasti ohjattu**. Se ohjaa maailman painetta ja suunnitelman sitkeyttä, ei pelaajan vapaaehtoisia valintoja. Yritysten tulokset, sitoumukset ja kulunut aika säilyvät jatkuvuudessa. Pelaajan menetettyä toimintamahdollisuutensa jatkovalinnat voivat päättää tarinan, vaihtaa kelvolliseen hahmoon tai luoda uudelleenyrityksen palautuspisteestä erilliseen tarinaan. Alkuperäisen tarinan historiaa ei kirjoiteta uudelleen.
+
+Vanhojen tuntemattomien sijaintien muunnos edellyttää esikatselua, eksplisiittistä valintaa ja ajantasaista revisiota. Älä hyväksy automaattisesti kaikkia ehdotuksia: vanhan tyhjän sijainnin merkitys voi olla epäselvä.
+
+Tavanomaiset mallikutsut säilyvät käytössä. Realtime-yhteyksiä ei avata. [Realtime-jatkosuunnitelma](SUUNNITELMA_REALTIME.md) kuvaa erilliset mallirajoitukset ja päätepisteet, hahmokohtaisten istuntojen orkestroinnin, pelaajan keskeytykset sekä token- ja välimuistilaskutuksen. Avoin yhteys ei tarkoita, että koko kasvava keskustelukonteksti laskutettaisiin vain kerran.
 
 ## Tekstimuokkaus
 
@@ -160,7 +174,7 @@ python -m unittest discover -s tests -v
 Käyttöliittymän aikaleima- ja rakenne-regressiot voi ajaa erikseen Node.js:llä (vain testaukseen, ei sovelluksen käyttöön):
 
 ```powershell
-node --test tests\test_frontend.cjs tests\test_bible_frontend.cjs
+node --test tests\test_frontend.cjs tests\test_bible_frontend.cjs tests\test_simulation_frontend.cjs
 ```
 
 Testit käyttävät väliaikaisia kansioita ja valemalleja, eivät käyttäjän tarinoita tai oikeita mallikutsuja. Ne kattavat muun muassa tietorajauksen, tilojen erot, pelaajan toiminnan, tallennuksen eheyden, uudelleenlähetyksen, muokkausristiriidat, muistinhaun, skeeman validoinnin, taustatyöt ja polkurajaukset. Testit ovat rajallisia eivätkä kata kaikkia käyttötilanteita.
@@ -171,4 +185,4 @@ Käyttöliittymää on kokeiltu kehitystyön yhteydessä työpöytä- ja puhelin
 
 Havaitsijoiden rajaus estää suoran yhteisen proosakontekstin vuodon. Kertoja on silti kielimalli: se voi kirjoittaa virheellisen havaintokuvauksen tai ristiriitaisen seurauksen. Skeematarkistus ei todista tapahtumien semanttista oikeellisuutta. Päätöskohtien ja kappaleiden rytmitys riippuu mallista ja prompteista.
 
-Tarinahaarat, proosamuutosten automaattinen tilasynkronointi, kuvien generointi ja usean palvelinprosessin työjono eivät kuulu tähän toteutukseen. Kuvituspromptteja voidaan edelleen tuottaa. Näitä ominaisuuksia kannattaa lisätä hyväksytyn tapahtuma- ja tilamallin päälle, ei ohittamalla sitä.
+Proosamuutosten automaattinen tilasynkronointi, kuvien generointi, Realtime-istunnot ja usean palvelinprosessin työjono eivät kuulu tähän toteutukseen. Uudelleenyrityshaara ei ole yleiskäyttöinen haarojen yhdistämis- tai historian uudelleenkirjoitustoiminto. Kuvituspromptteja voidaan edelleen tuottaa. Näitä ominaisuuksia kannattaa lisätä hyväksytyn tapahtuma- ja tilamallin päälle, ei ohittamalla sitä.

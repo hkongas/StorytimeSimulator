@@ -1,3 +1,8 @@
+.simulation-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; }
+.simulation-panel h3, .simulation-panel p { flex-basis: 100%; margin: 0; }
+.simulation-panel select, #plotGuidance { max-width: 100%; padding: 6px; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 6px; }
+#decisionGroupProgress { margin-right: 12px; }
+#nullLocationCandidates label { display: block; flex-basis: 100%; }
 .authored-prose { min-height: 120px; white-space: pre-wrap; outline: none; }
 #authoredTurnModal {
   position: static;

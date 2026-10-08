@@ -53,7 +53,7 @@ class CharacterAgent:
         # Haetaan hahmon aiemmat muistit tietokannasta (laajennettu raja pitkiin tarinoihin)
         memory_limit = 20 if self.character.tier == "major" else 10
         past_memories: List[CharacterMemory] = await db.get_relevant_memories(
-            story_id, self.character.id, f"{scene_location} {self.character.secret_motive}", limit=memory_limit
+            story_id, self.character.id, f"{scene_location} {self.character.current_goal} {self.character.secret_motive}", limit=memory_limit
         )
         recent_lines = {line.strip() for line in recent_prose_context.splitlines() if line.strip()}
         past_memories = [memory for memory in past_memories if memory.content.strip() not in recent_lines]
@@ -80,7 +80,6 @@ class CharacterAgent:
         relationships = await db.get_character_relationships(story_id, self.character.id)
         if relationships:
             user_content += "\n[RELATIONSHIPS YOU KNOW]\n" + json.dumps(relationships, ensure_ascii=False)
-        user_content += "\n[YOUR RECALLED MEMORIES]\n" + memory_text
         user_content += f"""
 [CURRENT LOCATION]
 {scene_location}
@@ -90,6 +89,10 @@ class CharacterAgent:
 """
         if nearby_characters:
             user_content += "\n[NÄET NYT]\n" + ", ".join(nearby_characters)
+        runtime = await turn_store.get_runtime(story_id)
+        commitments = [item for item in runtime.get("commitments", {}).values() if self.character.id in item.get("participants", [])]
+        if commitments:
+            user_content += "\n[YOUR ESTABLISHED COMMITMENTS]\n" + json.dumps(commitments, ensure_ascii=False)
         previous = await turn_store.get_last_intention(story_id, self.character.id)
         if previous:
             user_content += "\n[YOUR PREVIOUS PRIVATE THOUGHT AND ATTEMPT]\n" + json.dumps(previous, ensure_ascii=False)
@@ -110,11 +113,17 @@ class CharacterAgent:
 
         # Hahmo EI enää päivitä omaa tilaansa — Kertoja tekee sen synthesize_turn_prose -kutsussa
         decision = CharacterDecisionResponse.model_validate(result).model_dump()
+        witnessed = await db.get_character_event_accounts(story_id, self.character.id)
+        used_events = [item["id"] for item in witnessed if item["detail"] and item["detail"] in recent_prose_context]
         decision["context_manifest"] = {
-            "event_ids": await db.get_witnessed_event_ids(story_id, self.character.id),
+            "event_ids": used_events,
             "fact_ids": [],
             "memory_ids": [memory.id for memory in past_memories if memory.id is not None],
-            "truth_ids": []
+            "truth_ids": [],
+            "relationship_ids": [item["character_a"] + "|" + item["character_b"] for item in relationships],
+            "observation_character_id": self.character.id,
+            "previous_intent_id": previous.get("id"),
+            "commitment_ids": [item["id"] for item in commitments]
         }
         return decision
 

@@ -152,6 +152,9 @@ CREATE TABLE IF NOT EXISTS chronicle_entries (
     summary TEXT NOT NULL,
     world_updates TEXT DEFAULT '',
     repetition_flag BOOLEAN DEFAULT 0,
+    source_turn_ids TEXT NOT NULL DEFAULT '[]',
+    source_event_ids TEXT NOT NULL DEFAULT '[]',
+    summary_version INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -181,6 +184,7 @@ CREATE TABLE IF NOT EXISTS characters (
     represents_group TEXT,
     group_size_hint INTEGER,
     location_id TEXT,
+    visibility_state TEXT NOT NULL DEFAULT 'visible' CHECK (visibility_state IN ('visible', 'hidden')),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -204,6 +208,7 @@ CREATE TABLE IF NOT EXISTS scenes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chapter_number INTEGER DEFAULT 1,
     location TEXT NOT NULL,
+    location_id TEXT,
     scene_goal TEXT DEFAULT '',
     active_character_ids TEXT DEFAULT '[]', -- JSON-lista hahmojen ID:istä
     is_active BOOLEAN DEFAULT 1,
@@ -246,5 +251,14 @@ CREATE TABLE IF NOT EXISTS api_calls (
     turn_index INTEGER,
     status TEXT DEFAULT 'success',
     error_message TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS resolver_candidates (
+    request_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    audit_json TEXT NOT NULL,
+    status TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

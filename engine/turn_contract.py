@@ -61,14 +61,19 @@ def concrete_progress(before, after, events, world_changed=False):
     return any(event.change_kind != "none" for event in events)
 
 
-async def apply_resolved_changes(story_id, changes, roster, present_ids, scene_location):
+async def apply_resolved_changes(story_id, changes, roster, present_ids, scene_location, candidate_world=None):
     allowed = {
-        "character": {"location_id", "physical_state", "mental_state", "status"},
+        "character": {"location_id", "physical_state", "mental_state", "status", "visibility_state"},
         "item": {"holder_character_id", "location_id", "state"},
         "relationship": {"attitude", "trust", "summary"},
     }
     changed = False
+    seen = set()
     for change in changes:
+        key = (change.entity, change.entity_id, change.field)
+        if key in seen:
+            raise ValueError("Duplicate field mutation")
+        seen.add(key)
         if change.entity not in allowed or change.field not in allowed[change.entity]:
             raise ValueError("Ratkaisijan tilamuutos käyttää tukematonta kohdetta tai kenttää.")
         if change.entity == "character":
@@ -80,11 +85,13 @@ async def apply_resolved_changes(story_id, changes, roster, present_ids, scene_l
                     raise ValueError("Hahmon tila on virheellinen.")
                 if character.status == "dead" and change.value != "dead":
                     raise ValueError("Ratkaisija ei saa perua kuolemaa.")
+            elif change.field == "location_id" and change.value is None:
+                pass
             elif not isinstance(change.value, str):
                 raise ValueError("Hahmon tilamuutoksen arvon on oltava tekstiä.")
             previous = getattr(character, change.field)
         elif change.entity == "item":
-            item = await db.get_item(story_id, change.entity_id)
+            item = (candidate_world or {}).get("items", {}).get(change.entity_id) or await db.get_item(story_id, change.entity_id)
             if item is None:
                 raise ValueError("Ratkaisijan tilamuutos viittaa tuntemattomaan esineeseen.")
             if change.field == "holder_character_id" and change.value is not None and change.value not in present_ids:
@@ -99,7 +106,7 @@ async def apply_resolved_changes(story_id, changes, roster, present_ids, scene_l
                 changed |= item[counterpart] is not None
         else:
             identifiers = change.entity_id.split("|", 1)
-            if len(identifiers) != 2 or not await db.relationship_exists(story_id, *identifiers):
+            if len(identifiers) != 2 or (change.entity_id not in (candidate_world or {}).get("relationships", {}) and not await db.relationship_exists(story_id, *identifiers)):
                 raise ValueError("Ratkaisijan tilamuutos viittaa tuntemattomaan suhteeseen.")
             if change.field == "trust":
                 if isinstance(change.value, bool) or not isinstance(change.value, (int, float)) or not -1 <= change.value <= 1:
@@ -107,11 +114,11 @@ async def apply_resolved_changes(story_id, changes, roster, present_ids, scene_l
             elif not isinstance(change.value, str):
                 raise ValueError("Suhteen tilamuutoksen arvon on oltava tekstiä.")
             world = await db.get_planning_world(story_id)
-            relation = next(item for item in world["relationships"]
+            relation = (candidate_world or {}).get("relationships", {}).get(change.entity_id) or next(item for item in world["relationships"]
                             if item["character_a"] == identifiers[0] and item["character_b"] == identifiers[1])
             previous = relation[change.field]
         if change.field == "location_id" and change.value is not None:
-            if change.value != db.location_identifier(scene_location) and not await db.location_exists(story_id, change.value):
+            if change.value != db.location_identifier(scene_location) and change.value not in (candidate_world or {}).get("locations", {}) and not await db.location_exists(story_id, change.value):
                 raise ValueError("Ratkaisijan sijaintimuutos viittaa tuntemattomaan paikkaan.")
         if change.field not in {"mental_state", "physical_state"}:
             changed |= previous != change.value

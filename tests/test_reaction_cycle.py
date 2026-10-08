@@ -243,7 +243,7 @@ class ReactionEligibilityTests(unittest.TestCase):
         from engine.reaction_cycle import eligible_reaction_decisions
         scene = Scene(id=1, location="Room", scene_goal="Talk", active_character_ids=["ai", "player"])
         roster = {identifier: Character(id=identifier, name=identifier, age=30,
-                  is_player_controlled=identifier == "player") for identifier in ("ai", "player")}
+                  is_player_controlled=identifier == "player", location_id="room") for identifier in ("ai", "player")}
         base = {"prose": "Clue", "scene_location": "Room", "active_character_ids": ["ai", "player"],
                 "decision_character_ids": ["ai"],
                 "events": [{"id": "event", "description": "New clue", "derived_from": "consequence",
