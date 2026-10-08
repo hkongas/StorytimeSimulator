@@ -826,7 +826,7 @@ class StoryEngine:
         combined_bible = {field: bible[field] + [item.model_dump() for item in getattr(plan.bible_additions, field)]
                           for field in ("secret_truths", "clocks", "offscreen_agents")}
         if adaptive:
-            from core.schemas import InteractionProse
+            from engine.narrative_rendering import render_accepted_interaction
             from engine.interaction_history import accepted_outcome
             outcome = accepted_outcome(plan, intermediate_outcomes, initial_runtime, scene)
             from core.schemas import AttemptResult
@@ -837,21 +837,22 @@ class StoryEngine:
                            "intermediate_outcomes": [item.model_dump() for item in intermediate_outcomes],
                            "accepted_candidate": outcome.model_dump(), "budget": adaptive_budget.audit()}
             await turn_store.save_resolver_candidate(story_id, request_id, revision, fingerprint, draft_audit, "rendering")
-            for render_attempt in range(2):
-                render_runtime = runtime | {"render_validation_error": draft_audit.get("render_error", "")}
-                draft = await self.director.render_interaction(story_id, outcome, scene, render_runtime,
-                    "\n\n".join(turn.director_prose for turn in turns[-3:]), intentions)
-                draft_audit["candidate"] = draft
-                await turn_store.save_resolver_candidate(story_id, request_id, revision, fingerprint, draft_audit, "rendering")
-                try:
-                    rendered = InteractionProse.model_validate(draft)
-                    if rendered.consistency_issues:
-                        raise ValueError("Narrative contradicts accepted interaction events")
-                    break
-                except ValueError as error:
-                    draft_audit["render_error"] = str(error)
-                    if render_attempt:
-                        raise
+            memory_ids = {identifier for item in intentions for identifier in item.get("context_manifest", {}).get("memory_ids", [])}
+            sources = await turn_store.get_narrative_sources(story_id, memory_ids)
+            rendered, render_audit = await render_accepted_interaction(
+                self.director, story_id, outcome, scene, runtime | {"narrative_sources": sources},
+                "\n\n".join(turn.director_prose for turn in turns[-3:]), intentions)
+            narrative_repairs = await turn_store.prepare_narrative_repairs(
+                story_id, outcome, render_audit["source_repairs"], sources)
+            for repair in narrative_repairs["accepted"]:
+                if repair["target"] == "memory":
+                    for intention in intentions:
+                        if intention["character_id"] == repair["character_id"] and intention.get("memory") == repair["original_text"]:
+                            intention["memory"] = repair["replacement"]
+            draft_audit.update(candidate=rendered.model_dump(), narrative_render=render_audit, narrative_repairs=narrative_repairs)
+            await turn_store.save_resolver_candidate(story_id, request_id, revision, fingerprint, draft_audit, "rendered")
+            if render_audit["fallback"]:
+                plan_warnings.append("Literary rendering unavailable; accepted event descriptions used without replaying decisions.")
             outcome.prose = rendered.prose
             outcome.choices = rendered.choices
             outcome.chapter_title = runtime.get("chapter_title") or rendered.chapter_title
@@ -1050,7 +1051,8 @@ class StoryEngine:
             allowed_witnesses = {identifier for identifier, character in roster.items() if is_present(character, scene)}
             resolver_event_ids = {event.id for event in outcome.events}
             resolved_progress = bool(outcome.state_changes)
-            candidate_audit.update(budget=adaptive_budget.audit(), stages=["accepted_chain", "narrative_render"])
+            candidate_audit.update(budget=adaptive_budget.audit(), stages=["accepted_chain", "narrative_render"],
+                                   narrative_render=render_audit, narrative_repairs=narrative_repairs)
             outcome.scene_stop = True
             outcome.requires_player_input = outcome.requires_player_input or adaptive_budget.stop_reason == "player"
         elif group_player_stop:
@@ -1120,6 +1122,7 @@ class StoryEngine:
              "director_guidance": director_guidance, "director_model": settings.DIRECTOR_MODEL,
              "character_model": settings.CHARACTER_MODEL, "intentions": intentions,
              "contract_version": 3, "resolver_audit": candidate_audit,
+             "narrative_repairs": narrative_repairs if adaptive else {},
              "context_manifest": {"prose_turn_ids": [turn.id for turn in turns[-3:] if turn.id is not None],
                                   "runtime_fields": ["summary", "world_facts", "plot_threads", "commitments", "attempt_results"],
                                   "location_ids": [item["id"] for item in initial_world["locations"]]},

@@ -326,6 +326,54 @@ async def get_receipt(story_id: str, request_id: str, fingerprint: str | None = 
     return response
 
 
+async def get_narrative_sources(story_id, memory_ids):
+    async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
+        connection.row_factory = aiosqlite.Row
+        async with connection.execute("SELECT id, description FROM events ORDER BY turn_id DESC, rowid DESC LIMIT 100") as cursor:
+            events = [dict(row) for row in await cursor.fetchall()][::-1]
+        memories = []
+        if memory_ids:
+            async with connection.execute(
+                "SELECT id, character_id, content, memory_type, source_event_id FROM character_memories WHERE memory_type = 'reflection' AND id IN (" + ",".join("?" for _ in memory_ids) + ")", list(memory_ids)) as cursor:
+                memories = [dict(row) for row in await cursor.fetchall()]
+        return {"events": events, "memories": memories}
+
+
+async def prepare_narrative_repairs(story_id, outcome, repairs, sources):
+    events = {item["id"]: item["description"] for item in sources["events"]}
+    events.update({event.id: event.description for event in outcome.events})
+    memories = {item["id"]: item for item in sources["memories"]}
+    accepted, rejected = [], []
+    for repair in repairs:
+        identifiers = repair["event_ids"]
+        original = repair["original_text"]
+        record = dict(repair)
+        if len(set(identifiers)) != len(identifiers) or any(identifier not in events for identifier in identifiers):
+            rejected.append(record | {"rejection": "Unknown or duplicate source event"})
+            continue
+        if repair["target"] == "summary":
+            if repair.get("memory_id") is not None or original not in outcome.summary.split("\n"):
+                rejected.append(record | {"rejection": "Summary repair must match one complete existing line"})
+                continue
+            replacement = " ".join(events[identifier] for identifier in identifiers)
+            outcome.summary = "\n".join(replacement if line == original else line for line in outcome.summary.split("\n"))
+        else:
+            memory = memories.get(repair.get("memory_id"))
+            if not memory or memory["content"] != original:
+                rejected.append(record | {"rejection": "Not an exact supplied reflection memory"})
+                continue
+            accounts = {item["id"]: item["detail"] for item in await db.get_character_event_accounts(story_id, memory["character_id"])}
+            accounts.update({event.id: event.observation_for(memory["character_id"]) for event in outcome.events
+                             if event.observation_for(memory["character_id"])})
+            if any(not accounts.get(identifier) for identifier in identifiers):
+                rejected.append(record | {"rejection": "Character did not observe the cited events"})
+                continue
+            replacement = "\n".join(accounts[identifier] for identifier in identifiers)
+            record["character_id"] = memory["character_id"]
+        accepted.append(record | {"replacement": replacement})
+    return {"accepted": accepted, "rejected": rejected}
+
+
 async def get_event_descriptions(story_id: str) -> set[str]:
     async with aiosqlite.connect(db.get_db_path(story_id)) as connection:
         async with connection.execute("SELECT description FROM events") as cursor:
@@ -397,6 +445,13 @@ async def commit_turn(story_id: str, expected_last_id: int, turn: SceneTurn,
                         "INSERT INTO character_memories (character_id, scene_index, memory_type, content, importance_score, source_event_id, created_at_turn) VALUES (?, ?, 'observation', ?, 1, ?, ?)",
                         (character.id, turn.scene_id, observation, event.id, turn.turn_index)
                     )
+            for repair in audit.get("narrative_repairs", {}).get("accepted", []):
+                if repair["target"] == "memory":
+                    cursor = await connection.execute(
+                        "UPDATE character_memories SET content = ? WHERE id = ? AND character_id = ? AND memory_type = 'reflection' AND content = ?",
+                        (repair["replacement"], repair["memory_id"], repair["character_id"], repair["original_text"]))
+                    if cursor.rowcount != 1:
+                        raise TurnConflictError("Narrative repair source changed before commit")
             for intention in audit.get("intentions", []):
                 memory = intention.get("memory")
                 for memory_id in intention.get("context_manifest", {}).get("memory_ids", []):

@@ -488,14 +488,23 @@ Reader wish: {reader_wish or 'none'}
                    "attempt_results": [item.model_dump() for item in outcome.attempt_results],
                    "commitments": [item.model_dump() for item in outcome.commitments],
                    "continuity": outcome.summary, "scene": scene.location,
-                   "historical_style_tail": recent_prose[-3000:],
+                   "verified_history": runtime.get("narrative_sources", {}),
+                   "historical_style_tail_non_authoritative": recent_prose[-3000:],
                    "private_character_material_narrator_only": intentions}
         system = ("Write the narrator's finished prose from the accepted event chain in its exact order. "
                   "Cover material intermediate events and commitments naturally. An empty accepted chain is valid: "
                   "write a brief unchanged waiting boundary without inventing an action. Never resolve, undo, replay or "
                   "add events, character actions, observers or world facts. Private thoughts may inform narrator "
-                  "prose but never other characters' knowledge. Report material contradictions in consistency_issues; "
-                  "do not silently repair history. Menus belong only in choices. Return only the supplied schema. ")
+                  "prose but never other characters' knowledge. Accepted events and verified history outrank "
+                  "summaries, historical prose and character reflections. Intentions are proposals, NOT accomplished facts. "
+                  "Automatically correct background discrepancies in the finished new prose without inventing explanatory events. "
+                  "Do not rewrite old prose. Record background discrepancies already avoided in source_issues, not consistency_issues. "
+                  "consistency_issues is ONLY for contradictions still present in your NEW prose; fix them before returning. "
+                  "For a demonstrably incorrect summary line or supplied reflection memory, propose source_repairs with the exact "
+                  "original_text and verified event_ids. The program derives replacements from those events, using only the "
+                  "character's own observations for memories. Never repair genuine subjective beliefs, uncertainty or private "
+                  "feelings as factual errors; absence of an event alone does not establish an error. "
+                  "Menus belong only in choices. Return only the supplied schema. ")
         system += prompt_loader.get_language_directive()
         if meta:
             system += prompt_loader.get_raw_prompt("tone_profiles/" + meta.tone_profile + ".txt")

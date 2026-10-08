@@ -58,6 +58,9 @@ class CharacterAgent:
         recent_lines = {line.strip() for line in recent_prose_context.splitlines() if line.strip()}
         past_memories = [memory for memory in past_memories if memory.content.strip() not in recent_lines]
         memory_text = "\n".join([f"- ({m.memory_type}): {m.content}" for m in past_memories]) if past_memories else "Ei vielä aiempia muistikuvia."
+        memory_text += ("\nHavaintomuistit ovat omia havaintojasi. Reflection- ja belief-muistit ovat tulkintoja, "
+                        "eivät vahvistettuja maailman tapahtumia. Jos ne ovat ristiriidassa saamiesi "
+                        "tapahtumahavaintojen kanssa, perusta faktat havaintoihin; säilytä omat tunteesi ja epävarmuutesi.")
 
         system_prompt = prompt_loader.compose_system_prompt(
             prompt_name="character/decide_action",

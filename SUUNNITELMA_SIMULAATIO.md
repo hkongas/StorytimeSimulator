@@ -50,7 +50,7 @@ Alkuperäinen hyväksytty kertojaproosa on pysyvä kirjallinen historiatallenne.
 - Ratkaise tapahtumat ja seuraukset, kirjoita proosa niiden pohjalta ja tarkista olennaiset ristiriidat ennen hyväksyntää.
 - Hahmon rajattu näkymä muodostetaan havainnoista, ei kaikkitietävän proosan suodattamattomasta tulkinnasta.
 - Kertojan tulkinnat ja kielikuvat eivät automaattisesti ole uusia maailman faktoja.
-- Proosan, tapahtumien ja tilan ristiriita pysäyttää hyväksynnän korjattavaksi; sitä ei ratkaista hiljaisella historian muutoksella.
+- Tapahtumien ja tilan sopimusvirhe pysäyttää hyväksynnän. Adaptiivisen uuden proosan taustaristiriidat sovitetaan vahvistettuihin tapahtumiin jo kirjoitusvastauksessa; lähdehuomautus ei kaada vuoroa. Rajatun proosakorjauksen epäonnistuessa käytetään hyväksyttyjen tapahtumien varatekstiä. Johdettu yhteenvetorivi tai reflection-muisti voidaan korjata tapahtumalähteillä auditointiin ja rollbackiin sidottuna; vanha proosa ja hahmon belief-muistit säilyvät. Tarkat rajat: [vuorovaikutussuunnitelma](SUUNNITELMA_VUOROVAIKUTUS.md).
 - Kronikkaan säilytetään lähdeviitteet ja tiivistelmäversio. Vanha alkuperäinen aineisto voidaan hakea tarvittaessa.
 - Tekstieditointi ja maailmanmuutos erotetaan. Merkitystä muuttava editointi vaatii vaikutusten esikatselun tai uuden haaran.
 - Kumoaminen ja uudelleenyritys palauttavat tai haarauttavat tilan; ne eivät väitä, ettei alkuperäistä suoritusta tapahtunut sen omassa haarassa.

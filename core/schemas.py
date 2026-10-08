@@ -360,13 +360,24 @@ class RelayPermit(BaseModel):
     modality: Literal["heard"] = "heard"
 
 
+class NarrativeSourceRepair(BaseModel):
+    model_config = {"extra": "forbid"}
+    target: Literal["summary", "memory"]
+    original_text: str = Field(min_length=1)
+    memory_id: Optional[int] = None
+    event_ids: List[str] = Field(min_length=1, max_length=20)
+    reason: str = Field(min_length=1, max_length=600)
+
+
 class InteractionProse(BaseModel):
     model_config = {"extra": "forbid"}
     prose: str = Field(min_length=1)
     choices: List[str] = Field(default_factory=list, max_length=5)
     chapter_title: str = Field(default="", max_length=160)
     image_prompt: str = ""
-    consistency_issues: List[str] = Field(default_factory=list)
+    consistency_issues: List[str] = Field(default_factory=list, description="Remaining contradictions in the NEW prose only; correct these before returning")
+    source_issues: List[str] = Field(default_factory=list, description="Background contradictions already avoided in the finished prose; non-blocking audit")
+    source_repairs: List[NarrativeSourceRepair] = Field(default_factory=list, max_length=20)
 
 
 class SituationResponse(BaseModel):

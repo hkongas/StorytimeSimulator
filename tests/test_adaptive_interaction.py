@@ -37,6 +37,35 @@ class AdaptiveInteractionTests(unittest.IsolatedAsyncioTestCase):
             "event_id": event.id, "character_id": receiver, "decision": "New response"}]} if receiver else None,
             stop_reason="continue" if receiver else "ended")
 
+    async def test_render_fallback_handles_invalid_output_and_service_failure(self):
+        from engine.narrative_rendering import render_accepted_interaction
+        from unittest.mock import AsyncMock
+        outcome = ProseTurnResponse(prose="candidate", events=[StoryEvent(description="Accepted fact", derived_from="world")])
+        for invalid in ({"prose": "   "}, {"wrong_field": True}, RuntimeError("Provider unavailable")):
+            director = type("Director", (), {})()
+            director.render_interaction = AsyncMock(side_effect=invalid) if isinstance(invalid, Exception) else AsyncMock(return_value=invalid)
+            rendered, audit = await render_accepted_interaction(director, "fake", outcome, self.scene, {}, "", [])
+            self.assertEqual(rendered.prose, "Accepted fact")
+            self.assertTrue(audit["fallback"])
+            self.assertEqual(director.render_interaction.await_count, 2)
+        import asyncio
+        director.render_interaction = AsyncMock(side_effect=asyncio.CancelledError())
+        with self.assertRaises(asyncio.CancelledError):
+            await render_accepted_interaction(director, "fake", outcome, self.scene, {}, "", [])
+
+    async def test_source_repair_rejects_hidden_events_and_unknown_ids(self):
+        from unittest.mock import AsyncMock
+        outcome = ProseTurnResponse(prose="candidate", events=[StoryEvent(id="hidden", description="SECRET",
+            derived_from="world", observations=[{"character_id": "b", "text": "B_ONLY"}])])
+        sources = {"events": [], "memories": [{"id": 1, "character_id": "a", "content": "Old reflection"}]}
+        repairs = [{"target": "memory", "original_text": "Old reflection", "memory_id": 1,
+                    "event_ids": [identifier], "reason": "test"} for identifier in ("hidden", "missing")]
+        with patch.object(db, "get_character_event_accounts", new=AsyncMock(return_value=[])):
+            result = await turn_store.prepare_narrative_repairs("fake", outcome, repairs, sources)
+        self.assertEqual(result["accepted"], [])
+        self.assertEqual(len(result["rejected"]), 2)
+        self.assertEqual(result["rejected"][0]["rejection"], "Character did not observe the cited events")
+
     async def test_dynamic_a_b_a_and_unplanned_c(self):
         next_actors = iter(["b", "a", "c", None])
         async def resolve(fresh, previous, budget):
@@ -304,10 +333,93 @@ class AdaptiveStorageTests(unittest.IsolatedAsyncioTestCase):
             phases.append(event)
         self.assertEqual(len(render_calls), 2)
         self.assertEqual(render_calls[0]["accepted_events_in_order"], render_calls[1]["accepted_events_in_order"])
-        self.assertTrue(render_calls[1]["render_validation_error"])
+        self.assertIn("Omitted agreement", render_calls[1]["render_validation_error"])
         self.assertEqual(self.decision_number, 3)
         self.assertEqual(self.resolve_number, 3)
         self.assertEqual(sum(event.get("phase") == "situation_resolution" for event in phases), 3)
+
+    async def test_background_discrepancy_does_not_retry_or_replay(self):
+        original = self.model.json_completion
+        async def completion(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "interaction_prose":
+                result["source_issues"] = ["Old prose says accepted; verified history says pending. Avoided in new prose."]
+            return result
+        self.model.json_completion = completion
+        response = await self.engine.advance_turn(self.story_id, mode="simulation", request_id="background")
+        self.assertEqual(self.schemas.count("interaction_prose"), 1)
+        self.assertEqual(self.decision_number, 3)
+        self.assertEqual(self.resolve_number, 3)
+        self.assertIn("Utterance 3", response.director_prose)
+        candidate = await turn_store.get_resolver_candidate(self.story_id, "background")
+        self.assertEqual(candidate["status"], "committed")
+
+    async def test_persistent_render_failure_commits_fallback_once(self):
+        original = self.model.json_completion
+        async def completion(*args, **kwargs):
+            if kwargs.get("json_schema", {}).get("json_schema", {}).get("name") == "interaction_prose":
+                return {"prose": "Bad", "consistency_issues": ["Specific wrong result"]}
+            return await original(*args, **kwargs)
+        self.model.json_completion = completion
+        response = await self.engine.advance_turn(self.story_id, mode="simulation", request_id="fallback")
+        self.assertEqual(response.director_prose, "Utterance 1\n\nUtterance 2\n\nUtterance 3")
+        self.assertTrue(response.warnings)
+        replay = await self.engine.advance_turn(self.story_id, mode="simulation", request_id="fallback")
+        self.assertEqual(replay.director_prose, response.director_prose)
+        self.assertEqual(self.decision_number, 3)
+        self.assertEqual(self.resolve_number, 3)
+
+    async def test_derived_repairs_are_atomic_audited_and_observation_limited(self):
+        import aiosqlite
+        await self.engine.advance_turn(self.story_id, mode="simulation", request_id="seed")
+        async with aiosqlite.connect(db.get_db_path(self.story_id)) as connection:
+            cursor = await connection.execute(
+                "INSERT INTO character_memories (character_id, scene_index, memory_type, content, importance_score) VALUES (?, 1, 'reflection', 'Wrong factual recollection', 10)", (self.actors[0],))
+            memory_id = cursor.lastrowid
+            cursor = await connection.execute(
+                "INSERT INTO character_memories (character_id, scene_index, memory_type, content, importance_score) VALUES (?, 1, 'belief', 'Personal belief', 10)", (self.actors[0],))
+            belief_id = cursor.lastrowid
+            await connection.commit()
+        old_turns = [turn.director_prose for turn in await db.get_all_story_turns(self.story_id)]
+        original = self.model.json_completion
+        async def completion(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            schema = kwargs.get("json_schema", {}).get("json_schema", {}).get("name")
+            if schema == "character_decision":
+                result["context_manifest"] = {"memory_ids": [memory_id, belief_id]}
+            if schema == "situation_resolution":
+                for event in result["events"]:
+                    event["id"] += "-second"
+                if result.get("next_group"):
+                    result["next_group"]["reactions"][0]["event_id"] += "-second"
+                for attempt in result["attempt_results"]:
+                    attempt["event_id"] += "-second"
+            if schema == "interaction_prose":
+                payload = json.loads(kwargs["messages"][-1]["content"])
+                self.assertNotIn(belief_id, [item["id"] for item in payload["verified_history"]["memories"]])
+                evidence = {item["description"]: item["id"] for item in payload["verified_history"]["events"]}
+                result["source_repairs"] = [
+                    {"target": "memory", "memory_id": memory_id, "original_text": "Wrong factual recollection", "event_ids": [evidence["Utterance 1"]], "reason": "Correct using own observation"},
+                    {"target": "memory", "memory_id": belief_id, "original_text": "Personal belief", "event_ids": [evidence["Utterance 1"]], "reason": "Must not change a belief"},
+                    {"target": "summary", "original_text": "Utterance 1", "event_ids": [evidence["Utterance 2"]], "reason": "Correct derived summary"}]
+            return result
+        self.model.json_completion = completion
+        await self.engine.advance_turn(self.story_id, mode="simulation", request_id="repairs")
+        candidate = await turn_store.get_resolver_candidate(self.story_id, "repairs")
+        self.assertEqual(len(candidate["audit"]["narrative_repairs"]["accepted"]), 2, candidate["audit"]["narrative_repairs"])
+        async with aiosqlite.connect(db.get_db_path(self.story_id)) as connection:
+            async with connection.execute("SELECT content FROM character_memories WHERE id = ?", (memory_id,)) as cursor:
+                self.assertEqual((await cursor.fetchone())[0], "Utterance 1")
+            async with connection.execute("SELECT content FROM character_memories WHERE id = ?", (belief_id,)) as cursor:
+                self.assertEqual((await cursor.fetchone())[0], "Personal belief")
+        candidate = await turn_store.get_resolver_candidate(self.story_id, "repairs")
+        self.assertEqual(len(candidate["audit"]["narrative_repairs"]["accepted"]), 2)
+        self.assertEqual(len(candidate["audit"]["narrative_repairs"]["rejected"]), 1)
+        self.assertEqual([turn.director_prose for turn in (await db.get_all_story_turns(self.story_id))[:len(old_turns)]], old_turns)
+        await turn_store.rollback_last_turn(self.story_id, await turn_store.get_revision(self.story_id))
+        async with aiosqlite.connect(db.get_db_path(self.story_id)) as connection:
+            async with connection.execute("SELECT content FROM character_memories WHERE id = ?", (memory_id,)) as cursor:
+                self.assertEqual((await cursor.fetchone())[0], "Wrong factual recollection")
 
     async def test_world_addition_and_commitment_survive_controller_boundary(self):
         original = self.model.json_completion
